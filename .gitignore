@@ -171,3 +171,6 @@ Desktop.ini
 # Local configuration
 config.local.js
 config.local.json
+
+# Exclude documentation images/assets
+readmeAssets/

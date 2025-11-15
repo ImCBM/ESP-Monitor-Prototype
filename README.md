@@ -1,5 +1,10 @@
 # ESP32 Monitor Prototype
 
+
+<p align="center">
+   <img src="readmeAssets/MainPic.PNG" alt="ESP32 Monitor System Diagram" width="600" />
+</p>
+
 A professional Electron application that monitors and displays data from ESP32 devices through multiple communication paths: WiFi WebSocket, ESP-NOW relay, and USB Serial.
 
 ## Features
