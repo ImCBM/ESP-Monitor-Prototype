@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Monitor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1>ESP32 Monitor</h1>
+      <div class="connection-status">
+        <div class="status-item">
+          <div class="status-indicator" id="wifi-status"></div>
+          <span>WiFi ESP</span>
+          <span class="signal-strength" id="wifi-signal"></span>
+        </div>
+        <div class="status-item">
+          <div class="status-indicator" id="relay-status"></div>
+          <span>Relay ESP</span>
+        </div>
+        <div class="status-item">
+          <div class="status-indicator" id="usb-status"></div>
+          <span>USB ESPmain</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button id="refresh-btn" class="btn">🔄 Refresh Log</button>
+      <button id="clear-btn" class="btn">🗑️ Clear Log</button>
+      <select id="serial-port-select" class="serial-select">
+        <option value="">Select Serial Port...</option>
+      </select>
+      <button id="connect-btn" class="btn btn-primary">Connect</button>
+      <button id="disconnect-btn" class="btn btn-danger" style="display:none;">Disconnect</button>
+    </div>
+
+    <!-- Log Panel -->
+    <div class="log-container">
+      <div class="log-header">
+        <h2>Message Log</h2>
+        <div class="log-controls">
+          <label>
+            <input type="checkbox" id="auto-scroll" checked>
+            Auto-scroll
+          </label>
+          <label>
+            Filter:
+            <select id="filter-select">
+              <option value="ALL">All</option>
+              <option value="WIFI">WiFi</option>
+              <option value="RELAY">Relay</option>
+              <option value="USB">USB</option>
+              <option value="SYSTEM">System</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="log-panel" id="log-panel">
+        <div class="log-entry system">
+          <span class="log-timestamp">[SYSTEM]</span>
+          <span class="log-source">SYSTEM</span>
+          <span class="log-message">ESP32 Monitor started. Waiting for connections...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

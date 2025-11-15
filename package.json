@@ -1,0 +1,25 @@
+{
+  "name": "esp-monitor",
+  "version": "1.0.0",
+  "description": "ESP32 Monitor with WiFi, ESP-NOW Relay, and USB communication",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "keywords": [
+    "electron",
+    "esp32",
+    "websocket",
+    "serial"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  },
+  "dependencies": {
+    "serialport": "^12.0.0",
+    "ws": "^8.16.0"
+  }
+}
