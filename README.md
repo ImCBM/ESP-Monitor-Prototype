@@ -29,7 +29,7 @@ A professional Electron application that monitors and displays data from ESP32 d
 - Node.js (v16 or higher)
 - npm or yarn
 - Arduino IDE (for ESP32 programming)
-- ESP32 boards (minimum 2 boards for full testing)
+- **2 ESP32 boards** (for full testing of all communication paths)
 
 ### Electron App Setup
 
@@ -59,18 +59,15 @@ npm start
 3. Upload to first ESP32 board
 4. Note the MAC address from Serial Monitor
 
-#### Board 2: USB ESPmain (`ESP32_USB_Main`)
-1. Open `ESP32_USB_Main/ESP32_USB_Main.ino` in Arduino IDE
-2. Upload to second ESP32 board
-3. Connect to PC via USB
-4. Note the MAC address from Serial Monitor
+#### Board 2: USB ESPmain Combined (`ESP32_USB_Main_Combined`)
+1. Open `ESP32_USB_Main/ESP32_USB_Main_Combined.ino` in Arduino IDE
+2. Update configuration:
+   - `receiverMAC` - MAC of WiFi+Relay ESP (from Board 1)
+3. Upload to second ESP32 board
+4. Connect to PC via USB
+5. Note the MAC address from Serial Monitor
 
-#### Optional Board 3: Test Sender (`ESP32_Test_Sender`)
-1. Open `ESP32_Test_Sender/ESP32_Test_Sender.ino` in Arduino IDE
-2. Update MAC addresses:
-   - `receiverMAC1` - MAC of WiFi+Relay ESP
-   - `receiverMAC2` - MAC of USB ESPmain
-3. Upload to third ESP32 board
+**Note:** This combined version includes both USB serial communication AND test message sending, allowing full system testing with only 2 ESP32 boards!
 
 ## Usage
 
@@ -92,9 +89,11 @@ npm start
    - Click "Connect" button
    - Green USB indicator will light up
 
-4. **Power on Test Sender ESP** (optional)
-   - Sends messages via ESP-NOW
-   - Messages will be relayed through both WiFi and USB paths
+4. **Test Communication Paths**
+   - Board 2 automatically sends test messages via ESP-NOW every 7 seconds
+   - Messages are relayed through Board 1 to Electron (Relay path)
+   - Board 2 also sends its own data directly via USB (USB path)
+   - Board 1 sends periodic WiFi status (WiFi path)
 
 ### Monitoring
 
@@ -114,19 +113,24 @@ npm start
 - Signal strength displayed in header
 
 ### Test 2: ESP-NOW Relay via WiFi
-- Test Sender ESP → ESP-NOW → WiFi+Relay ESP → WebSocket → Electron
+- USB Board → ESP-NOW → WiFi+Relay ESP → WebSocket → Electron
 - Messages appear with "RELAY" tag
 - Includes sender MAC address
+- Automatic test messages every 7 seconds
 
-### Test 3: ESP-NOW via USB Serial
-- Test Sender ESP → ESP-NOW → USB ESPmain → Serial → Electron
+### Test 3: Direct USB Serial
+- USB Board → Serial → Electron
 - Messages appear with "USB" tag
-- Includes sender MAC address
+- Shows both sent and received message counts
+- Periodic status every 3 seconds
 
-### Test 4: Redundant Path Testing
-- All three ESPs powered on
-- Test Sender messages reach Electron via both paths
-- Demonstrates failover capability
+### Test 4: Full System Test (2 Boards)
+- Both ESPs powered on and connected
+- USB board sends test messages via ESP-NOW
+- WiFi board relays them to Electron via WebSocket (RELAY path)
+- USB board also reports directly via Serial (USB path)
+- WiFi board sends its own status (WIFI path)
+- All three communication paths active simultaneously!
 
 ## Project Structure
 
@@ -138,12 +142,11 @@ ESP-Monitor-Prototype/
 ├── index.html            # UI structure
 ├── styles.css            # UI styling
 ├── renderer.js           # UI logic
-├── ESP32_WiFi_Relay/     # WiFi + ESP-NOW relay board
+├── ESP32_WiFi_Relay/           # Board 1: WiFi + ESP-NOW relay
 │   └── ESP32_WiFi_Relay.ino
-├── ESP32_USB_Main/       # USB serial board
-│   └── ESP32_USB_Main.ino
-└── ESP32_Test_Sender/    # Test ESP-NOW sender
-    └── ESP32_Test_Sender.ino
+└── ESP32_USB_Main/             # Board 2: USB serial + test sender
+    ├── ESP32_USB_Main.ino              # Original (receive only)
+    └── ESP32_USB_Main_Combined.ino     # Combined (send + receive) ⭐ Use this!
 ```
 
 ## Configuration
@@ -156,8 +159,11 @@ ESP-Monitor-Prototype/
 ### ESP32 Boards
 - WiFi credentials: Update in `ESP32_WiFi_Relay.ino`
 - WebSocket server IP: Update in `ESP32_WiFi_Relay.ino`
-- MAC addresses: Update in `ESP32_Test_Sender.ino`
+- MAC address: Update `receiverMAC` in `ESP32_USB_Main_Combined.ino`
 - Data send intervals: Configurable in each `.ino` file
+  - WiFi status: every 2 seconds
+  - USB status: every 3 seconds
+  - Test messages: every 7 seconds
 
 ## Troubleshooting
 

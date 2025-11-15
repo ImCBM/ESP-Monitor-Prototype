@@ -221,6 +221,12 @@ body {
   background-color: rgba(220, 53, 69, 0.1);
 }
 
+.log-entry.espnow-relay {
+  border-left: 3px solid #e74c3c;
+  background-color: rgba(231, 76, 60, 0.1);
+  font-weight: 500;
+}
+
 .log-timestamp {
   color: #858585;
   min-width: 90px;

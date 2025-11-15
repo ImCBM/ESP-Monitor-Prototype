@@ -147,9 +147,11 @@ function addLogEntry(source, message, data = null) {
   const timestamp = new Date().toLocaleTimeString();
   const logEntry = {
     timestamp,
-    source,
+    source: source || 'UNKNOWN',
     message,
-    data
+    data,
+    mode: data?.mode,
+    isESPNowRelay: data?.isESPNowRelay || false
   };
 
   allLogs.push(logEntry);
@@ -173,6 +175,11 @@ function shouldShowLog(logEntry) {
 function renderLogEntry(logEntry) {
   const entry = document.createElement('div');
   entry.className = `log-entry ${logEntry.source.toLowerCase()}`;
+  
+  // Highlight ESP-NOW relay messages
+  if (logEntry.isESPNowRelay) {
+    entry.classList.add('espnow-relay');
+  }
 
   const timestampSpan = document.createElement('span');
   timestampSpan.className = 'log-timestamp';
@@ -180,7 +187,16 @@ function renderLogEntry(logEntry) {
 
   const sourceSpan = document.createElement('span');
   sourceSpan.className = `log-source ${logEntry.source.toLowerCase()}`;
-  sourceSpan.textContent = logEntry.source;
+  
+  // Show mode if available
+  let sourceText = logEntry.source;
+  if (logEntry.mode) {
+    sourceText += ` (${logEntry.mode})`;
+  }
+  if (logEntry.isESPNowRelay) {
+    sourceText = '📡 ' + sourceText + ' ESP-NOW';
+  }
+  sourceSpan.textContent = sourceText;
 
   const messageSpan = document.createElement('span');
   messageSpan.className = 'log-message';

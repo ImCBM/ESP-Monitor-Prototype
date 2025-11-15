@@ -62,7 +62,8 @@ function startWebSocketServer() {
         }
 
         // Determine source (WiFi or Relay)
-        const source = parsedData.source || 'WIFI';
+        let source = parsedData.source || 'WIFI';
+        const mode = parsedData.mode || '';
         
         // Update connection status
         if (source === 'WIFI') {
@@ -72,11 +73,19 @@ function startWebSocketServer() {
           connections.relay.connected = true;
         }
 
+        // Detect ESP-NOW relay messages
+        const isESPNowRelay = parsedData.sender_mac || parsedData.relayed_data;
+        if (isESPNowRelay) {
+          source = 'RELAY';
+        }
+
         sendConnectionStatus();
         
         sendToRenderer('log', {
           message: message,
           source: source,
+          mode: mode,
+          isESPNowRelay: isESPNowRelay,
           timestamp: new Date().toISOString(),
           data: parsedData
         });
@@ -178,9 +187,16 @@ function openSerialPort(portPath) {
         parsedData = { raw: message };
       }
 
+      // Detect ESP-NOW relay messages from USB
+      let source = parsedData.source || 'USB';
+      const mode = parsedData.mode || '';
+      const isESPNowRelay = parsedData.sender_mac || parsedData.received_data;
+      
       sendToRenderer('log', {
         message: message,
-        source: 'USB',
+        source: source,
+        mode: mode,
+        isESPNowRelay: isESPNowRelay,
         timestamp: new Date().toISOString(),
         data: parsedData
       });
