@@ -13,6 +13,8 @@ const wifiStatus = document.getElementById('wifi-status');
 const relayStatus = document.getElementById('relay-status');
 const usbStatus = document.getElementById('usb-status');
 const wifiSignal = document.getElementById('wifi-signal');
+const wifiDistance = document.getElementById('wifi-distance');
+const relayDistance = document.getElementById('relay-distance');
 
 // State
 let currentFilter = 'ALL';
@@ -122,16 +124,28 @@ function updateConnectionStatus(status) {
     if (status.wifi.signalStrength) {
       wifiSignal.textContent = `(${status.wifi.signalStrength} dBm)`;
     }
+    if (status.wifi.distance > 0) {
+      wifiDistance.textContent = `~${status.wifi.distance}m`;
+    } else {
+      wifiDistance.textContent = '';
+    }
   } else {
     wifiStatus.classList.remove('connected');
     wifiSignal.textContent = '';
+    wifiDistance.textContent = '';
   }
 
   // Relay status
   if (status.relay.connected) {
     relayStatus.classList.add('connected');
+    if (status.relay.distance > 0) {
+      relayDistance.textContent = `~${status.relay.distance}m`;
+    } else {
+      relayDistance.textContent = '';
+    }
   } else {
     relayStatus.classList.remove('connected');
+    relayDistance.textContent = '';
   }
 
   // USB status
@@ -188,31 +202,50 @@ function renderLogEntry(logEntry) {
   const sourceSpan = document.createElement('span');
   sourceSpan.className = `log-source ${logEntry.source.toLowerCase()}`;
   
-  // Show mode if available
+  // Show source with mode and ESP-NOW indicator
   let sourceText = logEntry.source;
+  if (logEntry.isESPNowRelay) {
+    sourceText = '📡 RELAY';
+  }
   if (logEntry.mode) {
     sourceText += ` (${logEntry.mode})`;
-  }
-  if (logEntry.isESPNowRelay) {
-    sourceText = '📡 ' + sourceText + ' ESP-NOW';
   }
   sourceSpan.textContent = sourceText;
 
   const messageSpan = document.createElement('span');
   messageSpan.className = 'log-message';
-  messageSpan.textContent = logEntry.message;
+  
+  // Parse and format the message for better readability
+  if (logEntry.data) {
+    // ESP-NOW relay message
+    if (logEntry.data.sender_mac || logEntry.data.relayed_data || logEntry.data.received_data) {
+      const senderMac = logEntry.data.sender_mac || 'Unknown';
+      const espData = logEntry.data.relayed_data || logEntry.data.received_data || '';
+      
+      messageSpan.innerHTML = `
+        <strong>ESP-NOW Message</strong><br>
+        <span class="data-label">From ESP2:</span> <code>${senderMac}</code><br>
+        <span class="data-label">Data:</span> <code>${espData}</code>
+      `;
+    } 
+    // Regular status message
+    else if (logEntry.data.message) {
+      messageSpan.innerHTML = `
+        <strong>${logEntry.data.message}</strong><br>
+        ${logEntry.data.received_count !== undefined ? `<span class="data-label">Received:</span> ${logEntry.data.received_count} | ` : ''}
+        ${logEntry.data.uptime !== undefined ? `<span class="data-label">Uptime:</span> ${logEntry.data.uptime}s | ` : ''}
+        ${logEntry.data.rssi !== undefined ? `<span class="data-label">RSSI:</span> ${logEntry.data.rssi} dBm` : ''}
+      `;
+    } else {
+      messageSpan.textContent = logEntry.message;
+    }
+  } else {
+    messageSpan.textContent = logEntry.message;
+  }
 
   entry.appendChild(timestampSpan);
   entry.appendChild(sourceSpan);
   entry.appendChild(messageSpan);
-
-  // Show formatted data if available
-  if (logEntry.data && Object.keys(logEntry.data).length > 1) {
-    const dataDiv = document.createElement('div');
-    dataDiv.className = 'log-data';
-    dataDiv.textContent = JSON.stringify(logEntry.data, null, 2);
-    messageSpan.appendChild(dataDiv);
-  }
 
   logPanel.appendChild(entry);
 }

@@ -1,17 +1,11 @@
 /*
  * ESP1 - ESP-NOW TO MONITOR RELAY
  * 
- * Simple two-mode operation:
- * 
- * USB MODE (plugged into laptop):
- * - Receives ESP-NOW messages only
- * - Forwards to monitor via USB Serial
- * - NO WiFi (avoids channel conflicts)
- * 
- * WIFI MODE (plain power supply):
+ * ALWAYS DUAL TRANSPORT:
  * - Receives ESP-NOW messages
- * - Connects to WiFi
- * - Forwards to monitor via WebSocket
+ * - Forwards via USB Serial (always)
+ * - Forwards via WiFi WebSocket (always)
+ * - Both transports active simultaneously
  * 
  * Hardware: Any ESP32 board
  * 
@@ -20,8 +14,8 @@
  *    - ESP32 Board Support
  *    - ArduinoWebsockets (by Gil Maimon)
  *    - ArduinoJson (by Benoit Blanchon)
- * 2. Update WiFi credentials below (for WiFi mode)
- * 3. Update WebSocket server IP below (for WiFi mode)
+ * 2. Update WiFi credentials below
+ * 3. Update WebSocket server IP below
  * 4. Upload to ESP32
  */
 
@@ -35,33 +29,30 @@ using namespace websockets;
 
 // ============ CONFIGURATION ============
 
-// WiFi Configuration (for WiFi Mode only)
+// WiFi Configuration
 const char* WIFI_SSID = "YOUR_HOTSPOT_NAME";
 const char* WIFI_PASSWORD = "YOUR_HOTSPOT_PASSWORD";
 
-// WebSocket Configuration (for WiFi Mode only)
+// WebSocket Configuration
 const char* WEBSOCKET_SERVER_IP = "192.168.137.1";
 const uint16_t WEBSOCKET_SERVER_PORT = 8080;
 
 // Device Configuration
 const char* DEVICE_ID = "ESP1_MAIN";
 
-// ============ MODE DETECTION ============
-
-enum OperationMode {
-  MODE_USB,       // USB only - no WiFi
-  MODE_WIFI       // WiFi + WebSocket
-};
-
-OperationMode currentMode;
+// ============ TEST MODE CONFIGURATION ============
+// Change this to test different modes:
+// "USB_ONLY"  - Only USB Serial, no WiFi/WebSocket
+// "WIFI_ONLY" - Only WiFi/WebSocket, no USB Serial  
+// "DUAL"      - Both USB Serial AND WiFi/WebSocket
+const char* TEST_MODE = "DUAL";  // <-- CHANGE THIS TO TEST
 
 // ============ VARIABLES ============
 
 int receiveMessageCount = 0;
 unsigned long lastStatusSend = 0;
-const unsigned long STATUS_INTERVAL = 3000;
+const unsigned long STATUS_INTERVAL = 5000;  // 5 seconds
 
-// WiFi Mode only
 WebsocketsClient wsClient;
 bool wsConnected = false;
 unsigned long lastReconnectAttempt = 0;
@@ -75,51 +66,93 @@ void setup() {
   
   Serial.println("\n=============================================");
   Serial.println("ESP1 - ESP-NOW Relay");
+  Serial.print("MODE: ");
+  Serial.println(TEST_MODE);
   Serial.println("=============================================\n");
 
-  // Detect operation mode
-  detectMode();
-  
-  // Mode-specific initialization
-  if (currentMode == MODE_USB) {
-    setupUSBMode();
-  } else {
-    setupWiFiMode();
+  // Initialize based on test mode
+  if (strcmp(TEST_MODE, "USB_ONLY") == 0) {
+    Serial.println("⚙️ USB ONLY MODE - No WiFi");
+    // Only initialize ESP-NOW
+    initESPNow();
+    Serial.println("Ready! ESP-NOW → USB Serial ONLY\n");
+  } 
+  else if (strcmp(TEST_MODE, "WIFI_ONLY") == 0) {
+    Serial.println("⚙️ WIFI ONLY MODE - No USB Serial forwarding");
+    // Initialize WiFi and WebSocket
+    initWiFi();
+    initESPNow();
+    connectWebSocket();
+    Serial.println("Ready! ESP-NOW → WiFi WebSocket ONLY\n");
+  }
+  else { // DUAL mode
+    Serial.println("⚙️ DUAL MODE - USB + WiFi");
+    // Initialize WiFi and WebSocket
+    initWiFi();
+    initESPNow();
+    connectWebSocket();
+    Serial.println("Ready! ESP-NOW → USB Serial AND WiFi WebSocket\n");
   }
 }
 
 void loop() {
-  if (currentMode == MODE_USB) {
-    loopUSBMode();
-  } else {
-    loopWiFiMode();
+  // Maintain WiFi connection (skip in USB_ONLY mode)
+  if (strcmp(TEST_MODE, "USB_ONLY") != 0) {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi disconnected! Reconnecting...");
+      initWiFi();
+    }
+
+    // Maintain WebSocket connection
+    if (wsConnected) {
+      wsClient.poll();
+    } else {
+      if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
+        lastReconnectAttempt = millis();
+        connectWebSocket();
+      }
+    }
   }
-  
-  delay(10);
-}
 
-// ============ MODE DETECTION ============
-
-void detectMode() {
-  // Check if USB Serial is connected to a PC
-  bool hasUSB = false;
-  if (Serial) {
-    delay(100);
-    if (Serial.availableForWrite() > 0) {
-      hasUSB = true;
+  // Send periodic status based on mode
+  if (millis() - lastStatusSend > STATUS_INTERVAL) {
+    lastStatusSend = millis();
+    
+    // Via USB Serial (skip in WIFI_ONLY mode)
+    if (strcmp(TEST_MODE, "WIFI_ONLY") != 0) {
+      StaticJsonDocument<200> usbDoc;
+      usbDoc["source"] = "USB";
+      usbDoc["device_id"] = DEVICE_ID;
+      usbDoc["mode"] = TEST_MODE;
+      usbDoc["received_count"] = receiveMessageCount;
+      usbDoc["uptime"] = millis() / 1000;
+      usbDoc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+      usbDoc["ws_connected"] = wsConnected;
+      usbDoc["message"] = String("ESP1 ") + TEST_MODE + " mode active";
+      
+      String usbJson;
+      serializeJson(usbDoc, usbJson);
+      Serial.println(usbJson);
+    }
+    
+    // Via WebSocket (skip in USB_ONLY mode)
+    if (strcmp(TEST_MODE, "USB_ONLY") != 0 && wsConnected) {
+      StaticJsonDocument<200> wifiDoc;
+      wifiDoc["source"] = "WIFI";
+      wifiDoc["device_id"] = DEVICE_ID;
+      wifiDoc["mode"] = TEST_MODE;
+      wifiDoc["received_count"] = receiveMessageCount;
+      wifiDoc["rssi"] = WiFi.RSSI();
+      wifiDoc["uptime"] = millis() / 1000;
+      wifiDoc["message"] = String("ESP1 ") + TEST_MODE + " mode active";
+      
+      String wifiJson;
+      serializeJson(wifiDoc, wifiJson);
+      wsClient.send(wifiJson);
     }
   }
   
-  if (hasUSB) {
-    currentMode = MODE_USB;
-    Serial.println("✓ USB MODE");
-    Serial.println("ESP-NOW receive only → USB Serial");
-    Serial.println("No WiFi (avoids channel conflicts)\n");
-  } else {
-    currentMode = MODE_WIFI;
-    Serial.println("✓ WIFI MODE");
-    Serial.println("ESP-NOW receive → WiFi WebSocket\n");
-  }
+  delay(10);
 }
 
 // ============ ESP-NOW INITIALIZATION ============
@@ -145,119 +178,40 @@ void initESPNow() {
   Serial.println("Ready to receive ESP-NOW broadcasts\n");
 }
 
-// ============ USB MODE ============
-
-void setupUSBMode() {
-  Serial.println("--- USB Mode Setup ---");
-  
-  // Set WiFi to STA mode but don't connect (ESP-NOW only)
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  
-  Serial.print("MAC Address: ");
-  Serial.println(WiFi.macAddress());
-  
-  // Force channel 1 for ESP-NOW
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-  
-  // Initialize ESP-NOW
-  initESPNow();
-  
-  Serial.println("Ready! Receiving ESP-NOW → USB Serial\n");
-}
-
-void loopUSBMode() {
-  // Send periodic status
-  if (millis() - lastStatusSend > STATUS_INTERVAL) {
-    lastStatusSend = millis();
-    
-    StaticJsonDocument<200> doc;
-    doc["source"] = "USB";
-    doc["device_id"] = DEVICE_ID;
-    doc["mode"] = "USB";
-    doc["received_count"] = receiveMessageCount;
-    doc["uptime"] = millis() / 1000;
-    doc["message"] = "ESP1 USB mode active";
-    
-    String json;
-    serializeJson(doc, json);
-    Serial.println(json);
-  }
-}
-
-// ============ WIFI MODE ============
-
-void setupWiFiMode() {
-  Serial.println("--- WiFi Mode Setup ---");
-  
-  // Connect to WiFi
-  initWiFi();
-  
-  // Initialize ESP-NOW (after WiFi to inherit channel)
-  initESPNow();
-  
-  // Connect to WebSocket
-  connectWebSocket();
-  
-  Serial.println("Ready! Receiving ESP-NOW → WiFi WebSocket\n");
-}
-
-void loopWiFiMode() {
-  // Maintain WiFi connection
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected! Reconnecting...");
-    initWiFi();
-  }
-
-  // Maintain WebSocket connection
-  if (wsConnected) {
-    wsClient.poll();
-  } else {
-    if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
-      lastReconnectAttempt = millis();
-      connectWebSocket();
-    }
-  }
-
-  // Send periodic status
-  if (millis() - lastStatusSend > STATUS_INTERVAL) {
-    lastStatusSend = millis();
-    
-    if (wsConnected) {
-      StaticJsonDocument<200> doc;
-      doc["source"] = "WIFI";
-      doc["device_id"] = DEVICE_ID;
-      doc["mode"] = "WIFI";
-      doc["received_count"] = receiveMessageCount;
-      doc["rssi"] = WiFi.RSSI();
-      doc["uptime"] = millis() / 1000;
-      doc["message"] = "ESP1 WiFi mode active";
-      
-      String json;
-      serializeJson(doc, json);
-      wsClient.send(json);
-    }
-  }
-}
-
 // ============ WIFI INITIALIZATION ============
 
 void initWiFi() {
-  Serial.print("Connecting to WiFi: ");
+  Serial.println("Initializing WiFi...");
+  Serial.print("SSID: ");
   Serial.println(WIFI_SSID);
   
-  WiFi.mode(WIFI_STA);
+  // In USB_ONLY mode, use STA mode only (no WiFi connection)
+  // In WIFI modes, use AP+STA mode to receive ESP-NOW while connected to WiFi
+  if (strcmp(TEST_MODE, "USB_ONLY") == 0) {
+    WiFi.mode(WIFI_STA);
+    Serial.println("Mode: WIFI_STA (USB_ONLY - no WiFi connection)");
+  } else {
+    WiFi.mode(WIFI_AP_STA);
+    Serial.println("Mode: WIFI_AP_STA (for ESP-NOW + WiFi)");
+  }
+  
+  Serial.print("STA MAC Address: ");
+  Serial.println(WiFi.macAddress());
+  Serial.print("AP MAC Address (ESP-NOW): ");
+  Serial.println(WiFi.softAPmacAddress());
+  
+  Serial.println("Connecting...");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
     delay(500);
     Serial.print(".");
     attempts++;
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✓ WiFi connected");
+    Serial.println("\n✓ WiFi connected!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
     Serial.print("RSSI: ");
@@ -269,11 +223,8 @@ void initWiFi() {
     esp_wifi_get_channel(&primary, &secondary);
     Serial.print("Channel: ");
     Serial.println(primary);
-    
-    Serial.print("MAC: ");
-    Serial.println(WiFi.macAddress());
   } else {
-    Serial.println("\n❌ WiFi connection failed");
+    Serial.println("\n❌ WiFi FAILED - Check SSID/password");
   }
 }
 
@@ -318,6 +269,9 @@ void connectWebSocket() {
 // ============ ESP-NOW CALLBACK ============
 
 void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *data, int data_len) {
+  // Immediate processing - no delay
+  delay(100);  // Small delay to ensure stability
+  
   receiveMessageCount++;
   
   char macStr[18];
@@ -339,40 +293,77 @@ void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *d
   Serial.println(receivedData);
   Serial.print("Count: ");
   Serial.println(receiveMessageCount);
-  Serial.println("═══════════════════════════════════════════════════════\n");
+  Serial.println("═══════════════════════════════════════════════════════");
   
-  // Forward based on mode
-  if (currentMode == MODE_USB) {
-    // USB mode - forward via Serial
-    StaticJsonDocument<500> doc;
-    doc["source"] = "USB";
-    doc["device_id"] = DEVICE_ID;
-    doc["mode"] = "USB";
-    doc["sender_mac"] = macStr;
-    doc["received_data"] = receivedData;
-    doc["data_length"] = data_len;
-    doc["receive_count"] = receiveMessageCount;
-    doc["message"] = "ESP-NOW message received";
+  delay(50);  // Brief pause before forwarding
+  
+  Serial.println("\n🔄 FORWARDING ESP-NOW MESSAGE TO MONITOR...");
+  Serial.print("Mode: ");
+  Serial.println(TEST_MODE);
+  
+  // Forward via USB Serial (skip in WIFI_ONLY mode)
+  if (strcmp(TEST_MODE, "WIFI_ONLY") != 0) {
+    StaticJsonDocument<500> usbDoc;
+    usbDoc["source"] = "USB";
+    usbDoc["device_id"] = DEVICE_ID;
+    usbDoc["mode"] = TEST_MODE;
+    usbDoc["sender_mac"] = macStr;
+    usbDoc["received_data"] = receivedData;
+    usbDoc["data_length"] = data_len;
+    usbDoc["receive_count"] = receiveMessageCount;
+    usbDoc["message"] = "ESP-NOW message (USB path)";
     
-    String json;
-    serializeJson(doc, json);
-    Serial.println(json);
+    String usbJson;
+    serializeJson(usbDoc, usbJson);
+    Serial.println("📤 USB: " + usbJson);
+    Serial.flush();  // Ensure USB data is sent
+    
+    delay(100);  // Delay between USB and WiFi sends
   } else {
-    // WiFi mode - forward via WebSocket
+    Serial.println("⏭️ Skipping USB (WIFI_ONLY mode)");
+  }
+  
+  // Forward via WebSocket (skip in USB_ONLY mode)
+  if (strcmp(TEST_MODE, "USB_ONLY") != 0) {
     if (wsConnected) {
-      StaticJsonDocument<400> doc;
-      doc["source"] = "RELAY";
-      doc["device_id"] = DEVICE_ID;
-      doc["mode"] = "WIFI";
-      doc["sender_mac"] = macStr;
-      doc["relayed_data"] = receivedData;
-      doc["rssi"] = WiFi.RSSI();
-      doc["message"] = "ESP-NOW relay from " + String(macStr);
+      StaticJsonDocument<400> wifiDoc;
+      wifiDoc["source"] = "RELAY";
+      wifiDoc["device_id"] = DEVICE_ID;
+      wifiDoc["mode"] = TEST_MODE;
+      wifiDoc["sender_mac"] = macStr;
+      wifiDoc["relayed_data"] = receivedData;
+      wifiDoc["rssi"] = WiFi.RSSI();
+      wifiDoc["message"] = "ESP-NOW relay (WiFi path) from " + String(macStr);
       
-      String json;
-      serializeJson(doc, json);
-      wsClient.send(json);
-      Serial.println("Relayed to Electron");
+      String wifiJson;
+      serializeJson(wifiDoc, wifiJson);
+      bool sent = wsClient.send(wifiJson);
+      Serial.print("📤 WiFi: ");
+      Serial.println(sent ? "SUCCESS" : "FAILED");
+    } else {
+      Serial.println("⚠️ WiFi not connected - cannot send via WiFi");
+    }
+  } else {
+    Serial.println("⏭️ Skipping WiFi (USB_ONLY mode)");
+  }
+  
+  // Summary
+  if (strcmp(TEST_MODE, "DUAL") == 0) {
+    if (wsConnected) {
+      Serial.println("✅ Sent via BOTH USB and WiFi");
+    } else {
+      Serial.println("⚠️ Sent via USB only (WiFi not connected)");
+    }
+  } else if (strcmp(TEST_MODE, "USB_ONLY") == 0) {
+    Serial.println("✅ Sent via USB only");
+  } else if (strcmp(TEST_MODE, "WIFI_ONLY") == 0) {
+    if (wsConnected) {
+      Serial.println("✅ Sent via WiFi only");
+    } else {
+      Serial.println("❌ WiFi not connected - message NOT forwarded!");
     }
   }
+  
+  delay(50);  // Final stability delay
+  Serial.println("═══════════════════════════════════════════════════════\n");
 }

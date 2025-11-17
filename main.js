@@ -12,10 +12,24 @@ const WEBSOCKET_PORT = 8080;
 
 // Connection states
 let connections = {
-  wifi: { connected: false, signalStrength: 0 },
-  relay: { connected: false, signalStrength: 0 },
+  wifi: { connected: false, signalStrength: 0, distance: 0 },
+  relay: { connected: false, signalStrength: 0, distance: 0 },
   usb: { connected: false }
 };
+
+// Estimate distance from RSSI (in meters)
+// Formula: distance = 10^((TxPower - RSSI) / (10 * N))
+// TxPower: typical ESP32 transmission power at 1m = -59 dBm
+// N: path loss exponent (2 = free space, 2-4 = indoor)
+function estimateDistance(rssi) {
+  if (rssi === 0 || rssi >= 0) return 0;
+  
+  const txPower = -59; // Measured RSSI at 1 meter
+  const n = 2.5; // Path loss exponent (indoor environment)
+  
+  const distance = Math.pow(10, (txPower - rssi) / (10 * n));
+  return Math.round(distance * 10) / 10; // Round to 1 decimal
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -69,6 +83,7 @@ function startWebSocketServer() {
         if (source === 'WIFI') {
           connections.wifi.connected = true;
           connections.wifi.signalStrength = parsedData.rssi || 0;
+          connections.wifi.distance = estimateDistance(parsedData.rssi || 0);
         } else if (source === 'RELAY') {
           connections.relay.connected = true;
         }
@@ -77,6 +92,7 @@ function startWebSocketServer() {
         const isESPNowRelay = parsedData.sender_mac || parsedData.relayed_data;
         if (isESPNowRelay) {
           source = 'RELAY';
+          connections.relay.connected = true;
         }
 
         sendConnectionStatus();
@@ -87,6 +103,7 @@ function startWebSocketServer() {
           mode: mode,
           isESPNowRelay: isESPNowRelay,
           timestamp: new Date().toISOString(),
+          distance: connections.wifi.distance || connections.relay.distance || 0,
           data: parsedData
         });
       } catch (error) {
@@ -191,6 +208,12 @@ function openSerialPort(portPath) {
       let source = parsedData.source || 'USB';
       const mode = parsedData.mode || '';
       const isESPNowRelay = parsedData.sender_mac || parsedData.received_data;
+      
+      // Update relay connection status when ESP-NOW message detected
+      if (isESPNowRelay) {
+        connections.relay.connected = true;
+        sendConnectionStatus();
+      }
       
       sendToRenderer('log', {
         message: message,
