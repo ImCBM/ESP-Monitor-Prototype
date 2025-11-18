@@ -303,19 +303,8 @@ void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *d
   
   // Forward via USB Serial (skip in WIFI_ONLY mode)
   if (strcmp(TEST_MODE, "WIFI_ONLY") != 0) {
-    StaticJsonDocument<500> usbDoc;
-    usbDoc["source"] = "USB";
-    usbDoc["device_id"] = DEVICE_ID;
-    usbDoc["mode"] = TEST_MODE;
-    usbDoc["sender_mac"] = macStr;
-    usbDoc["received_data"] = receivedData;
-    usbDoc["data_length"] = data_len;
-    usbDoc["receive_count"] = receiveMessageCount;
-    usbDoc["message"] = "ESP-NOW message (USB path)";
-    
-    String usbJson;
-    serializeJson(usbDoc, usbJson);
-    Serial.println("📤 USB: " + usbJson);
+    // Forward the original ESP2 message directly without wrapping
+    Serial.println("📤 USB: " + receivedData);
     Serial.flush();  // Ensure USB data is sent
     
     delay(100);  // Delay between USB and WiFi sends
@@ -326,18 +315,8 @@ void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *d
   // Forward via WebSocket (skip in USB_ONLY mode)
   if (strcmp(TEST_MODE, "USB_ONLY") != 0) {
     if (wsConnected) {
-      StaticJsonDocument<400> wifiDoc;
-      wifiDoc["source"] = "RELAY";
-      wifiDoc["device_id"] = DEVICE_ID;
-      wifiDoc["mode"] = TEST_MODE;
-      wifiDoc["sender_mac"] = macStr;
-      wifiDoc["relayed_data"] = receivedData;
-      wifiDoc["rssi"] = WiFi.RSSI();
-      wifiDoc["message"] = "ESP-NOW relay (WiFi path) from " + String(macStr);
-      
-      String wifiJson;
-      serializeJson(wifiDoc, wifiJson);
-      bool sent = wsClient.send(wifiJson);
+      // Forward the original ESP2 message directly without wrapping
+      bool sent = wsClient.send(receivedData);
       Serial.print("📤 WiFi: ");
       Serial.println(sent ? "SUCCESS" : "FAILED");
     } else {
