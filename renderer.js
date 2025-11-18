@@ -243,73 +243,10 @@ function renderLogEntry(logEntry) {
   
   // Parse and format the message for better readability
   if (logEntry.data) {
-    // ESP-NOW relay message
-    if (logEntry.data.sender_mac || logEntry.data.relayed_data || logEntry.data.received_data || 
-        (logEntry.data.message && logEntry.data.message.includes('ESP-NOW'))) {
-      
-      // Try to extract data from various formats
-      let senderMac = logEntry.data.sender_mac || 'Unknown';
-      let espData = logEntry.data.relayed_data || logEntry.data.received_data || '';
-      let deviceId = logEntry.data.device_id || 'Unknown Device';
-      let messageCount = logEntry.data.message_count || 'N/A';
-      let uptime = logEntry.data.uptime || 'N/A';
-      let freeHeap = logEntry.data.free_heap || 'N/A';
-      let receivedCount = logEntry.data.received_count || logEntry.data.receive_count || 'N/A';
-      
-      // If data is in raw format, try to parse it
-      if (logEntry.data.raw && typeof logEntry.data.raw === 'string') {
-        try {
-          const rawData = JSON.parse(logEntry.data.raw);
-          senderMac = rawData.sender_mac || senderMac;
-          espData = rawData.received_data || rawData.relayed_data || espData;
-          deviceId = rawData.device_id || deviceId;
-          messageCount = rawData.message_count || messageCount;
-          uptime = rawData.uptime || uptime;
-          freeHeap = rawData.free_heap || freeHeap;
-          receivedCount = rawData.received_count || rawData.receive_count || receivedCount;
-        } catch (e) {
-          // If parsing fails, extract from the message string
-          const msg = logEntry.data.raw;
-          const macMatch = msg.match(/"sender_mac":"([^"]+)"/);
-          const dataMatch = msg.match(/"received_data":"([^"]+)"/);
-          const deviceMatch = msg.match(/"device_id":"([^"]+)"/);
-          const countMatch = msg.match(/"message_count":(\d+)/);
-          const uptimeMatch = msg.match(/"uptime":(\d+)/);
-          const heapMatch = msg.match(/"free_heap":(\d+)/);
-          const receivedMatch = msg.match(/"receive_count":(\d+)/);
-          
-          if (macMatch) senderMac = macMatch[1];
-          if (dataMatch) espData = dataMatch[1];
-          if (deviceMatch) deviceId = deviceMatch[1];
-          if (countMatch) messageCount = countMatch[1];
-          if (uptimeMatch) uptime = uptimeMatch[1];
-          if (heapMatch) freeHeap = heapMatch[1];
-          if (receivedMatch) receivedCount = receivedMatch[1];
-        }
-      }
-      
-      messageSpan.innerHTML = `
-        <strong>📡 ESP-NOW Relay Message</strong><br>
-        <div style="margin: 8px 0; padding: 12px; background: rgba(70, 130, 180, 0.15); border: 1px solid rgba(70, 130, 180, 0.3); border-radius: 6px;">
-          <div style="margin-bottom: 8px;">
-            <span class="data-label">From Device:</span> <code style="background: rgba(70, 130, 180, 0.2); padding: 3px 8px; border-radius: 3px;">${deviceId}</code>
-          </div>
-          <div style="margin-bottom: 8px;">
-            <span class="data-label">MAC Address:</span> <code style="background: rgba(70, 130, 180, 0.2); padding: 3px 8px; border-radius: 3px;">${senderMac}</code>
-          </div>
-          <div style="margin-bottom: 8px;">
-            <span class="data-label">Message Content:</span><br>
-            <code style="background: rgba(70, 130, 180, 0.2); padding: 6px 10px; border-radius: 3px; display: inline-block; margin-top: 4px; max-width: 100%; word-break: break-all;">${espData}</code>
-          </div>
-          <div style="font-size: 12px; color: #9cdcfe; border-top: 1px solid rgba(70, 130, 180, 0.2); padding-top: 8px; margin-top: 8px;">
-            <strong>Device Statistics:</strong><br>
-            Messages Sent: <code>${messageCount}</code> • 
-            Messages Received: <code>${receivedCount}</code> • 
-            Uptime: <code>${uptime}s</code> • 
-            Free Memory: <code>${freeHeap} bytes</code>
-          </div>
-        </div>
-      `;
+    // ESP-NOW relay message - just show raw JSON with highlighting
+    if (logEntry.isESPNowRelay || (logEntry.message && logEntry.message.includes('sender_mac'))) {
+      // Just display the raw message as-is
+      messageSpan.textContent = logEntry.message;
     } 
     // Regular status message
     else if (logEntry.data.message) {

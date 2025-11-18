@@ -232,15 +232,12 @@ function openSerialPort(portPath) {
       let source = parsedData.source || 'USB';
       const mode = parsedData.mode || '';
       
-      // Improved ESP-NOW relay detection
-      const isESPNowRelay = parsedData.sender_mac || 
-                           parsedData.received_data || 
-                           parsedData.relayed_data ||
-                           (parsedData.message && parsedData.message.includes('ESP-NOW message')) ||
-                           (message.includes('sender_mac') && message.includes('received_data')) ||
-                           (message.includes('"source":"USB"') && message.includes('"sender_mac"'));
+      // Simple relay detection - just look for the key patterns
+      const isESPNowRelay = message.includes('sender_mac') && message.includes('received_data');
       
-      console.log('Relay detection result:', isESPNowRelay);
+      if (isESPNowRelay) {
+        console.log('ESP-NOW relay detected via brute force method!');
+      }
       
       // Update relay connection status when ESP-NOW message detected
       if (isESPNowRelay) {
