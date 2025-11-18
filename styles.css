@@ -60,6 +60,16 @@ body {
   box-shadow: 0 0 8px rgba(40, 167, 69, 0.8);
 }
 
+/* Relay indicators distinct colors */
+#relay-usb-status.connected {
+  background-color: #28a745;
+  box-shadow: 0 0 8px rgba(40, 167, 69, 0.8);
+}
+#relay-wifi-status.connected {
+  background-color: #28a745;
+  box-shadow: 0 0 8px rgba(40, 167, 69, 0.8);
+}
+
 .signal-strength {
   font-size: 12px;
   opacity: 0.8;
@@ -218,6 +228,16 @@ body {
   border-left: 3px solid #f39c12;
 }
 
+.log-entry.relay_usb {
+  border-left: 3px solid #4682b4;
+  background-color: rgba(70, 130, 180, 0.1);
+}
+
+.log-entry.relay_wifi {
+  border-left: 3px solid #4682b4;
+  background-color: rgba(70, 130, 180, 0.1);
+}
+
 .log-entry.usb {
   border-left: 3px solid #28a745;
 }
@@ -232,8 +252,8 @@ body {
 }
 
 .log-entry.espnow-relay {
-  border-left: 3px solid #e74c3c;
-  background-color: rgba(231, 76, 60, 0.1);
+  border-left: 3px solid #4682b4;
+  background-color: rgba(70, 130, 180, 0.1);
   font-weight: 500;
 }
 
@@ -253,6 +273,14 @@ body {
 
 .log-source.relay {
   color: #f39c12;
+}
+
+.log-source.relay_usb {
+  color: #4682b4;
+}
+
+.log-source.relay_wifi {
+  color: #4682b4;
 }
 
 .log-source.usb {

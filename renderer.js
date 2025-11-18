@@ -10,11 +10,11 @@ const filterSelect = document.getElementById('filter-select');
 
 // Status indicators
 const wifiStatus = document.getElementById('wifi-status');
-const relayStatus = document.getElementById('relay-status');
+const relayUsbStatus = document.getElementById('relay-usb-status');
+const relayWifiStatus = document.getElementById('relay-wifi-status');
 const usbStatus = document.getElementById('usb-status');
 const wifiSignal = document.getElementById('wifi-signal');
 const wifiDistance = document.getElementById('wifi-distance');
-const relayDistance = document.getElementById('relay-distance');
 
 // State
 let currentFilter = 'ALL';
@@ -135,17 +135,20 @@ function updateConnectionStatus(status) {
     wifiDistance.textContent = '';
   }
 
-  // Relay status
-  if (status.relay.connected) {
-    relayStatus.classList.add('connected');
-    if (status.relay.distance > 0) {
-      relayDistance.textContent = `~${status.relay.distance}m`;
-    } else {
-      relayDistance.textContent = '';
-    }
+  // Relay (USB) status
+  if (status.relayUsb && status.relayUsb.connected) {
+    console.log('Setting USB relay indicator to GREEN');
+    relayUsbStatus.classList.add('connected');
   } else {
-    relayStatus.classList.remove('connected');
-    relayDistance.textContent = '';
+    relayUsbStatus.classList.remove('connected');
+  }
+
+  // Relay (WiFi) status
+  if (status.relayWifi && status.relayWifi.connected) {
+    console.log('Setting WiFi relay indicator to GREEN');
+    relayWifiStatus.classList.add('connected');
+  } else {
+    relayWifiStatus.classList.remove('connected');
   }
 
   // USB status
@@ -159,13 +162,22 @@ function updateConnectionStatus(status) {
 // Add log entry
 function addLogEntry(source, message, data = null) {
   const timestamp = new Date().toLocaleTimeString();
+  
+  // Detect relay messages by source or content
+  const isESPNowRelay = data?.isESPNowRelay || 
+                        source === 'RELAY_USB' || 
+                        source === 'RELAY_WIFI' ||
+                        (data?.sender_mac && (data?.received_data || data?.relayed_data)) ||
+                        (data?.message && data?.message.includes('ESP-NOW message')) ||
+                        (message && message.includes('sender_mac'));
+  
   const logEntry = {
     timestamp,
     source: source || 'UNKNOWN',
     message,
     data,
     mode: data?.mode,
-    isESPNowRelay: data?.isESPNowRelay || false
+    isESPNowRelay
   };
 
   allLogs.push(logEntry);
@@ -182,6 +194,14 @@ function addLogEntry(source, message, data = null) {
 // Check if log should be shown based on filter
 function shouldShowLog(logEntry) {
   if (currentFilter === 'ALL') return true;
+  if (currentFilter === 'RELAY') {
+    // Only show relayed ESP-NOW messages
+    return logEntry.isESPNowRelay === true;
+  }
+  // Handle RELAY_USB and RELAY_WIFI as part of their respective categories
+  if (currentFilter === 'USB' && logEntry.source === 'RELAY_USB') return true;
+  if (currentFilter === 'WIFI' && logEntry.source === 'RELAY_WIFI') return true;
+  
   return logEntry.source === currentFilter;
 }
 
@@ -205,9 +225,15 @@ function renderLogEntry(logEntry) {
   // Show source with mode and ESP-NOW indicator
   let sourceText = logEntry.source;
   if (logEntry.isESPNowRelay) {
-    sourceText = '📡 RELAY';
+    if (logEntry.source === 'RELAY_USB') {
+      sourceText = 'USB | RELAY';
+    } else if (logEntry.source === 'RELAY_WIFI') {
+      sourceText = 'WiFi | RELAY';
+    } else {
+      sourceText = 'ESP-NOW | RELAY';
+    }
   }
-  if (logEntry.mode) {
+  if (logEntry.mode && !logEntry.isESPNowRelay) {
     sourceText += ` (${logEntry.mode})`;
   }
   sourceSpan.textContent = sourceText;
@@ -218,14 +244,71 @@ function renderLogEntry(logEntry) {
   // Parse and format the message for better readability
   if (logEntry.data) {
     // ESP-NOW relay message
-    if (logEntry.data.sender_mac || logEntry.data.relayed_data || logEntry.data.received_data) {
-      const senderMac = logEntry.data.sender_mac || 'Unknown';
-      const espData = logEntry.data.relayed_data || logEntry.data.received_data || '';
+    if (logEntry.data.sender_mac || logEntry.data.relayed_data || logEntry.data.received_data || 
+        (logEntry.data.message && logEntry.data.message.includes('ESP-NOW'))) {
+      
+      // Try to extract data from various formats
+      let senderMac = logEntry.data.sender_mac || 'Unknown';
+      let espData = logEntry.data.relayed_data || logEntry.data.received_data || '';
+      let deviceId = logEntry.data.device_id || 'Unknown Device';
+      let messageCount = logEntry.data.message_count || 'N/A';
+      let uptime = logEntry.data.uptime || 'N/A';
+      let freeHeap = logEntry.data.free_heap || 'N/A';
+      let receivedCount = logEntry.data.received_count || logEntry.data.receive_count || 'N/A';
+      
+      // If data is in raw format, try to parse it
+      if (logEntry.data.raw && typeof logEntry.data.raw === 'string') {
+        try {
+          const rawData = JSON.parse(logEntry.data.raw);
+          senderMac = rawData.sender_mac || senderMac;
+          espData = rawData.received_data || rawData.relayed_data || espData;
+          deviceId = rawData.device_id || deviceId;
+          messageCount = rawData.message_count || messageCount;
+          uptime = rawData.uptime || uptime;
+          freeHeap = rawData.free_heap || freeHeap;
+          receivedCount = rawData.received_count || rawData.receive_count || receivedCount;
+        } catch (e) {
+          // If parsing fails, extract from the message string
+          const msg = logEntry.data.raw;
+          const macMatch = msg.match(/"sender_mac":"([^"]+)"/);
+          const dataMatch = msg.match(/"received_data":"([^"]+)"/);
+          const deviceMatch = msg.match(/"device_id":"([^"]+)"/);
+          const countMatch = msg.match(/"message_count":(\d+)/);
+          const uptimeMatch = msg.match(/"uptime":(\d+)/);
+          const heapMatch = msg.match(/"free_heap":(\d+)/);
+          const receivedMatch = msg.match(/"receive_count":(\d+)/);
+          
+          if (macMatch) senderMac = macMatch[1];
+          if (dataMatch) espData = dataMatch[1];
+          if (deviceMatch) deviceId = deviceMatch[1];
+          if (countMatch) messageCount = countMatch[1];
+          if (uptimeMatch) uptime = uptimeMatch[1];
+          if (heapMatch) freeHeap = heapMatch[1];
+          if (receivedMatch) receivedCount = receivedMatch[1];
+        }
+      }
       
       messageSpan.innerHTML = `
-        <strong>ESP-NOW Message</strong><br>
-        <span class="data-label">From ESP2:</span> <code>${senderMac}</code><br>
-        <span class="data-label">Data:</span> <code>${espData}</code>
+        <strong>📡 ESP-NOW Relay Message</strong><br>
+        <div style="margin: 8px 0; padding: 12px; background: rgba(70, 130, 180, 0.15); border: 1px solid rgba(70, 130, 180, 0.3); border-radius: 6px;">
+          <div style="margin-bottom: 8px;">
+            <span class="data-label">From Device:</span> <code style="background: rgba(70, 130, 180, 0.2); padding: 3px 8px; border-radius: 3px;">${deviceId}</code>
+          </div>
+          <div style="margin-bottom: 8px;">
+            <span class="data-label">MAC Address:</span> <code style="background: rgba(70, 130, 180, 0.2); padding: 3px 8px; border-radius: 3px;">${senderMac}</code>
+          </div>
+          <div style="margin-bottom: 8px;">
+            <span class="data-label">Message Content:</span><br>
+            <code style="background: rgba(70, 130, 180, 0.2); padding: 6px 10px; border-radius: 3px; display: inline-block; margin-top: 4px; max-width: 100%; word-break: break-all;">${espData}</code>
+          </div>
+          <div style="font-size: 12px; color: #9cdcfe; border-top: 1px solid rgba(70, 130, 180, 0.2); padding-top: 8px; margin-top: 8px;">
+            <strong>Device Statistics:</strong><br>
+            Messages Sent: <code>${messageCount}</code> • 
+            Messages Received: <code>${receivedCount}</code> • 
+            Uptime: <code>${uptime}s</code> • 
+            Free Memory: <code>${freeHeap} bytes</code>
+          </div>
+        </div>
       `;
     } 
     // Regular status message

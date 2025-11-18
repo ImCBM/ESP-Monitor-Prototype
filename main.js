@@ -13,7 +13,8 @@ const WEBSOCKET_PORT = 8080;
 // Connection states
 let connections = {
   wifi: { connected: false, signalStrength: 0, distance: 0 },
-  relay: { connected: false, signalStrength: 0, distance: 0 },
+  relayUsb: { connected: false },
+  relayWifi: { connected: false },
   usb: { connected: false }
 };
 
@@ -84,15 +85,25 @@ function startWebSocketServer() {
           connections.wifi.connected = true;
           connections.wifi.signalStrength = parsedData.rssi || 0;
           connections.wifi.distance = estimateDistance(parsedData.rssi || 0);
-        } else if (source === 'RELAY') {
-          connections.relay.connected = true;
         }
 
-        // Detect ESP-NOW relay messages
-        const isESPNowRelay = parsedData.sender_mac || parsedData.relayed_data;
+        // Detect ESP-NOW relay messages (WiFi path)
+        const isESPNowRelay = parsedData.sender_mac || 
+                             parsedData.relayed_data ||
+                             parsedData.received_data ||
+                             (parsedData.message && parsedData.message.includes('ESP-NOW message'));
         if (isESPNowRelay) {
-          source = 'RELAY';
-          connections.relay.connected = true;
+          source = 'RELAY_WIFI';
+          connections.relayWifi.connected = true;
+          // Clear any existing timeout
+          if (connections.relayWifi.timeout) {
+            clearTimeout(connections.relayWifi.timeout);
+          }
+          // Set timeout to clear indicator after 10 seconds of inactivity
+          connections.relayWifi.timeout = setTimeout(() => {
+            connections.relayWifi.connected = false;
+            sendConnectionStatus();
+          }, 10000);
         }
 
         sendConnectionStatus();
@@ -204,15 +215,62 @@ function openSerialPort(portPath) {
         parsedData = { raw: message };
       }
 
+      // Debug logging for relay detection (only when ESP-NOW detected)
+      if (message.includes('sender_mac') || parsedData.sender_mac) {
+        console.log('Processing potential relay message:', {
+          message: message.substring(0, 100) + '...',
+          hasSenderMac: !!parsedData.sender_mac,
+          hasReceivedData: !!parsedData.received_data,
+          hasRelayedData: !!parsedData.relayed_data,
+          hasESPNowInMessage: parsedData.message && parsedData.message.includes('ESP-NOW'),
+          hasJSONRelay: message.includes('sender_mac') && message.includes('received_data'),
+          source: parsedData.source
+        });
+      }
+
       // Detect ESP-NOW relay messages from USB
       let source = parsedData.source || 'USB';
       const mode = parsedData.mode || '';
-      const isESPNowRelay = parsedData.sender_mac || parsedData.received_data;
+      
+      // Improved ESP-NOW relay detection
+      const isESPNowRelay = parsedData.sender_mac || 
+                           parsedData.received_data || 
+                           parsedData.relayed_data ||
+                           (parsedData.message && parsedData.message.includes('ESP-NOW message')) ||
+                           (message.includes('sender_mac') && message.includes('received_data')) ||
+                           (message.includes('"source":"USB"') && message.includes('"sender_mac"'));
+      
+      console.log('Relay detection result:', isESPNowRelay);
       
       // Update relay connection status when ESP-NOW message detected
       if (isESPNowRelay) {
-        connections.relay.connected = true;
-        sendConnectionStatus();
+        console.log('ESP-NOW relay detected via USB! Setting indicator...');
+        console.log('Message contains sender_mac:', !!parsedData.sender_mac);
+        console.log('Message contains received_data:', !!parsedData.received_data);
+        
+        source = 'RELAY_USB';
+        connections.relayUsb.connected = true;
+        
+        console.log('connections.relayUsb.connected set to:', connections.relayUsb.connected);
+        
+        // Clear any existing timeout
+        if (connections.relayUsb.timeout) {
+          clearTimeout(connections.relayUsb.timeout);
+        }
+        
+        // Set timeout to clear indicator after 10 seconds of inactivity
+        connections.relayUsb.timeout = setTimeout(() => {
+          console.log('Timeout: Clearing USB relay indicator after 10 seconds');
+          connections.relayUsb.connected = false;
+          sendConnectionStatus();
+        }, 10000);
+        
+        // Send status with a small delay to ensure it's processed
+        setTimeout(() => {
+          sendConnectionStatus();
+        }, 100);
+        
+        console.log('RelayUSB status set to:', connections.relayUsb.connected);
       }
       
       sendToRenderer('log', {
@@ -263,7 +321,14 @@ function sendToRenderer(channel, data) {
 }
 
 function sendConnectionStatus() {
-  sendToRenderer('connection-status', connections);
+  // Create a clean copy for sending (without timeout references)
+  const cleanConnections = {
+    wifi: connections.wifi,
+    relayUsb: { connected: connections.relayUsb.connected },
+    relayWifi: { connected: connections.relayWifi.connected },
+    usb: connections.usb
+  };
+  sendToRenderer('connection-status', cleanConnections);
 }
 
 // IPC Handlers
