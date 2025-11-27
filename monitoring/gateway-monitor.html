@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP Gateway Monitor</title>
+    <link rel="stylesheet" href="gateway-monitor.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header Section -->
+        <header class="header">
+            <h1>🔌 ESP Gateway Monitor</h1>
+            <div class="system-status">
+                <div class="status-item">
+                    <span class="label">Gateway Status:</span>
+                    <span id="gateway-status" class="status-indicator offline">Offline</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">ESP2 Network:</span>
+                    <span id="esp2-network" class="status-indicator">Waiting...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Gateway Information Panel -->
+        <section class="gateway-info">
+            <h2>🚀 ESP1 Wired Gateway</h2>
+            <div class="info-grid">
+                <div class="info-card">
+                    <div class="card-header">
+                        <h3>Gateway Details</h3>
+                        <span class="card-icon">🔧</span>
+                    </div>
+                    <div class="card-content">
+                        <div class="detail-row">
+                            <span class="label">Device ID:</span>
+                            <span id="gateway-id">-</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Version:</span>
+                            <span id="gateway-version">-</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Uptime:</span>
+                            <span id="gateway-uptime">-</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Protocol Range:</span>
+                            <span id="protocol-range">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-card">
+                    <div class="card-header">
+                        <h3>Connection Health</h3>
+                        <span class="card-icon">📡</span>
+                    </div>
+                    <div class="card-content">
+                        <div class="detail-row">
+                            <span class="label">USB Serial:</span>
+                            <span id="usb-status" class="connection-status">Disconnected</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">ESP-NOW:</span>
+                            <span id="espnow-status" class="connection-status">Unknown</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">MAC Address:</span>
+                            <span id="esp-mac">-</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">Protocol Mismatches:</span>
+                            <span id="protocol-mismatches">0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ESP2 Phase Statistics -->
+        <section class="phase-stats">
+            <h2>📊 ESP2 Phase Statistics</h2>
+            <div class="phase-grid">
+                <div class="phase-card phase-1">
+                    <h3>Phase 1</h3>
+                    <div class="phase-title">Core Communication</div>
+                    <div class="phase-stats-content">
+                        <div class="stat-item">
+                            <span class="stat-label">Ping Messages:</span>
+                            <span id="ping-count" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Data Messages:</span>
+                            <span id="data-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="phase-card phase-2">
+                    <h3>Phase 2</h3>
+                    <div class="phase-title">WiFi Coordination</div>
+                    <div class="phase-stats-content">
+                        <div class="stat-item">
+                            <span class="stat-label">WiFi Scan Messages:</span>
+                            <span id="wifi-scan-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="phase-card phase-3">
+                    <h3>Phase 3</h3>
+                    <div class="phase-title">Enhanced Discovery</div>
+                    <div class="phase-stats-content">
+                        <div class="stat-item">
+                            <span class="stat-label">Handshake Messages:</span>
+                            <span id="handshake-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="phase-card phase-4">
+                    <h3>Phase 4</h3>
+                    <div class="phase-title">Triangulation</div>
+                    <div class="phase-stats-content">
+                        <div class="stat-item">
+                            <span class="stat-label">Triangulation Messages:</span>
+                            <span id="triangulation-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="phase-card phase-5">
+                    <h3>Phase 5</h3>
+                    <div class="phase-title">Message Relaying</div>
+                    <div class="phase-stats-content">
+                        <div class="stat-item">
+                            <span class="stat-label">Relay Messages:</span>
+                            <span id="relay-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="phase-card phase-6">
+                    <h3>Phase 6</h3>
+                    <div class="phase-title">Optimization</div>
+                    <div class="phase-stats-content">
+                        <div class="stat-item">
+                            <span class="stat-label">Optimization Messages:</span>
+                            <span id="optimization-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Message Activity Section -->
+        <section class="message-activity">
+            <div class="activity-header">
+                <h2>📨 Real-Time Message Activity</h2>
+                <div class="activity-controls">
+                    <button id="clear-messages" class="btn-secondary">Clear Messages</button>
+                    <button id="pause-messages" class="btn-secondary">Pause</button>
+                </div>
+            </div>
+
+            <div class="activity-summary">
+                <div class="summary-item">
+                    <span class="label">Total Messages:</span>
+                    <span id="total-messages" class="value">0</span>
+                </div>
+                <div class="summary-item">
+                    <span class="label">Delivered:</span>
+                    <span id="delivered-messages" class="value">0</span>
+                </div>
+                <div class="summary-item">
+                    <span class="label">Last Sender:</span>
+                    <span id="last-sender" class="value">None</span>
+                </div>
+                <div class="summary-item">
+                    <span class="label">Last Message Type:</span>
+                    <span id="last-message-type" class="value">None</span>
+                </div>
+            </div>
+
+            <div class="message-log" id="message-log">
+                <div class="log-placeholder">
+                    📡 Waiting for ESP2 messages...
+                </div>
+            </div>
+        </section>
+
+        <!-- ESP2 Network Topology -->
+        <section class="network-topology">
+            <h2>🌐 ESP2 Network Topology</h2>
+            <div class="topology-container">
+                <div class="topology-legend">
+                    <div class="legend-item">
+                        <div class="legend-color phase-1-color"></div>
+                        <span>Phase 1 (Core)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color phase-3-color"></div>
+                        <span>Phase 3 (Discovery)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color phase-4-color"></div>
+                        <span>Phase 4 (Positioning)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color phase-5-color"></div>
+                        <span>Phase 5 (Relay)</span>
+                    </div>
+                </div>
+                <div id="topology-canvas" class="topology-canvas">
+                    <div class="topology-placeholder">
+                        🔍 ESP2 devices will appear here when detected
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="gateway-monitor.js"></script>
+</body>
+</html>

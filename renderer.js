@@ -1,34 +1,258 @@
-// DOM Elements
+// DOM elements
 const logPanel = document.getElementById('log-panel');
 const serialPortSelect = document.getElementById('serial-port-select');
 const connectBtn = document.getElementById('connect-btn');
 const disconnectBtn = document.getElementById('disconnect-btn');
-const refreshBtn = document.getElementById('refresh-btn');
 const clearBtn = document.getElementById('clear-btn');
-const autoScrollCheckbox = document.getElementById('auto-scroll');
+const refreshOverviewBtn = document.getElementById('refresh-overview');
+const autoScrollCheck = document.getElementById('auto-scroll');
 const filterSelect = document.getElementById('filter-select');
+const resetStatsBtn = document.getElementById('reset-stats');
 
 // Status indicators
 const wifiStatus = document.getElementById('wifi-status');
 const relayUsbStatus = document.getElementById('relay-usb-status');
 const relayWifiStatus = document.getElementById('relay-wifi-status');
 const usbStatus = document.getElementById('usb-status');
-const wifiSignal = document.getElementById('wifi-signal');
-const wifiDistance = document.getElementById('wifi-distance');
 
-// State
-let currentFilter = 'ALL';
+// Dashboard elements
+const navItems = document.querySelectorAll('.nav-item');
+const tabContents = document.querySelectorAll('.tab-content');
+const systemHealthIndicator = document.getElementById('system-health');
+const gatewayDeviceElement = document.getElementById('gateway-device');
+const esp2CountElement = document.getElementById('esp2-count');
+const totalMessagesElement = document.getElementById('total-messages');
+const systemUptimeElement = document.getElementById('system-uptime');
+const recentActivityFeed = document.getElementById('recent-activity');
+const networkConnections = document.getElementById('network-connections');
+
+// Phase count elements
+const phaseCountElements = {
+  1: document.getElementById('phase1-count'),
+  3: document.getElementById('phase3-count'),
+  4: document.getElementById('phase4-count'),
+  5: document.getElementById('phase5-count')
+};
+
+// Device detail elements
+const gatewayDeviceDetail = document.getElementById('gateway-device-detail');
+const gatewayVersion = document.getElementById('gateway-version');
+const gatewayProtocol = document.getElementById('gateway-protocol');
+const esp1Status = document.getElementById('esp1-status');
+
+// Network analysis elements
+const wifiSignalDetail = document.getElementById('wifi-signal-detail');
+const wifiDistanceDetail = document.getElementById('wifi-distance-detail');
+const messageRate = document.getElementById('message-rate');
+const signalBars = document.querySelectorAll('.signal-bar');
+
+// Application state
+let isConnected = false;
+let connectionStatus = {};
+let logFilter = 'ALL';
 let autoScroll = true;
-let allLogs = [];
+let startTime = Date.now();
+let messageCount = 0;
+let lastMessageTime = 0;
+let gatewayStats = {
+  esp1Connected: false,
+  esp2DeviceCount: 0,
+  messageStats: { total: 0 },
+  gatewayInfo: { deviceId: 'Unknown' }
+};
 
-// Initialize
-async function init() {
-  await loadSerialPorts();
+// Initialize dashboard
+document.addEventListener('DOMContentLoaded', () => {
+  initializeDashboard();
+  loadSerialPorts();
+  updateSystemUptime();
+  setInterval(updateSystemUptime, 1000);
+  setInterval(updateMessageRate, 1000);
+});
+
+function initializeDashboard() {
+  // Set up tab navigation
+  navItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const tabId = item.dataset.tab;
+      switchTab(tabId);
+    });
+  });
+  
+  // Set default active tab
+  switchTab('overview');
+  
+  // Setup event listeners
   setupEventListeners();
-  loadConnectionStatus();
 }
 
-// Load available serial ports
+function switchTab(tabId) {
+  // Remove active class from all nav items and tab contents
+  navItems.forEach(item => item.classList.remove('active'));
+  tabContents.forEach(content => content.classList.remove('active'));
+  
+  // Add active class to selected tab
+  const selectedNavItem = document.querySelector(`[data-tab="${tabId}"]`);
+  const selectedTabContent = document.getElementById(`${tabId}-tab`);
+  
+  if (selectedNavItem && selectedTabContent) {
+    selectedNavItem.classList.add('active');
+    selectedTabContent.classList.add('active');
+  }
+}
+
+function updateSystemUptime() {
+  const uptime = Math.floor((Date.now() - startTime) / 1000);
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
+  const seconds = uptime % 60;
+  
+  const uptimeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  if (systemUptimeElement) {
+    systemUptimeElement.textContent = uptimeString;
+  }
+}
+
+function updateMessageRate() {
+  const now = Date.now();
+  const timeDiff = (now - lastMessageTime) / 1000;
+  const rate = timeDiff > 0 ? Math.round(messageCount / timeDiff * 10) / 10 : 0;
+  
+  if (messageRate) {
+    messageRate.textContent = `${rate}/sec`;
+  }
+}
+
+function updateDashboard() {
+  // Update system health indicator
+  let healthColor = '🔴';
+  if (gatewayStats.esp1Connected) {
+    healthColor = gatewayStats.esp2DeviceCount > 0 ? '🟢' : '🟡';
+  }
+  if (systemHealthIndicator) {
+    systemHealthIndicator.textContent = healthColor;
+  }
+  
+  // Update overview metrics
+  if (gatewayDeviceElement) {
+    gatewayDeviceElement.textContent = gatewayStats.gatewayInfo.deviceId;
+  }
+  if (gatewayDeviceDetail) {
+    gatewayDeviceDetail.textContent = gatewayStats.gatewayInfo.deviceId;
+  }
+  if (esp2CountElement) {
+    esp2CountElement.textContent = gatewayStats.esp2DeviceCount;
+  }
+  if (totalMessagesElement) {
+    totalMessagesElement.textContent = gatewayStats.messageStats.total || 0;
+  }
+  if (gatewayVersion) {
+    gatewayVersion.textContent = gatewayStats.gatewayInfo.version || '-';
+  }
+  if (gatewayProtocol) {
+    gatewayProtocol.textContent = gatewayStats.gatewayInfo.protocolRange || '-';
+  }
+  
+  // Update ESP1 status
+  if (esp1Status) {
+    esp1Status.textContent = gatewayStats.esp1Connected ? '🟢' : '🔴';
+  }
+  
+  // Update phase counts
+  Object.keys(phaseCountElements).forEach(phase => {
+    const element = phaseCountElements[phase];
+    if (element) {
+      element.textContent = gatewayStats.messageStats[getPhaseMessageType(phase)] || 0;
+    }
+  });
+}
+
+function getPhaseMessageType(phase) {
+  const phaseMap = {
+    '1': 'ping',
+    '3': 'handshake',
+    '4': 'triangulation',
+    '5': 'relay'
+  };
+  return phaseMap[phase] || 'unknown';
+}
+
+function addActivityItem(message, source) {
+  if (!recentActivityFeed) return;
+  
+  const activityItem = document.createElement('div');
+  activityItem.className = 'activity-item';
+  
+  const time = new Date().toLocaleTimeString();
+  const shortMessage = message.length > 50 ? message.substring(0, 50) + '...' : message;
+  
+  activityItem.innerHTML = `
+    <span class="activity-time">${time}</span>
+    <span class="activity-message">${source}: ${shortMessage}</span>
+  `;
+  
+  // Add to top of feed
+  recentActivityFeed.insertBefore(activityItem, recentActivityFeed.firstChild);
+  
+  // Keep only last 10 items
+  while (recentActivityFeed.children.length > 10) {
+    recentActivityFeed.removeChild(recentActivityFeed.lastChild);
+  }
+}
+
+function updateSignalBars(rssi) {
+  if (!signalBars) return;
+  
+  // Convert RSSI to signal strength (0-4 bars)
+  let strength = 0;
+  if (rssi >= -50) strength = 4;
+  else if (rssi >= -60) strength = 3;
+  else if (rssi >= -70) strength = 2;
+  else if (rssi >= -80) strength = 1;
+  
+  signalBars.forEach((bar, index) => {
+    if (index < strength) {
+      bar.classList.add('active');
+    } else {
+      bar.classList.remove('active');
+    }
+  });
+}
+
+function setupEventListeners() {
+  // Event listeners
+  connectBtn.addEventListener('click', connectSerial);
+  disconnectBtn.addEventListener('click', disconnectSerial);
+  clearBtn.addEventListener('click', clearLog);
+  if (refreshOverviewBtn) {
+    refreshOverviewBtn.addEventListener('click', () => {
+      loadSerialPorts();
+      updateDashboard();
+    });
+  }
+  if (resetStatsBtn) {
+    resetStatsBtn.addEventListener('click', resetGatewayStats);
+  }
+  filterSelect.addEventListener('change', (e) => {
+    logFilter = e.target.value;
+    filterLogEntries();
+  });
+  autoScrollCheck.addEventListener('change', (e) => {
+    autoScroll = e.target.checked;
+  });
+}
+
+async function resetGatewayStats() {
+  try {
+    await window.electronAPI.resetGatewayStats();
+    addLogEntry('Gateway statistics reset', 'SYSTEM');
+  } catch (error) {
+    console.error('Error resetting gateway stats:', error);
+    addLogEntry('Error resetting gateway stats', 'ERROR');
+  }
+}
+
+// Functions
 async function loadSerialPorts() {
   try {
     const ports = await window.electronAPI.listSerialPorts();
@@ -37,252 +261,142 @@ async function loadSerialPorts() {
     ports.forEach(port => {
       const option = document.createElement('option');
       option.value = port.path;
-      option.textContent = `${port.path}${port.manufacturer ? ` (${port.manufacturer})` : ''}`;
+      option.textContent = `${port.path} (${port.manufacturer || 'Unknown'})`;
       serialPortSelect.appendChild(option);
     });
   } catch (error) {
-    addLogEntry('ERROR', 'Failed to load serial ports: ' + error.message);
+    console.error('Error loading serial ports:', error);
+    addLogEntry('Error loading serial ports', 'ERROR');
   }
 }
 
-// Setup event listeners
-function setupEventListeners() {
-  connectBtn.addEventListener('click', async () => {
-    const portPath = serialPortSelect.value;
-    if (!portPath) {
-      alert('Please select a serial port');
-      return;
-    }
-    
-    try {
-      await window.electronAPI.openSerialPort(portPath);
-      connectBtn.style.display = 'none';
-      disconnectBtn.style.display = 'inline-block';
-      serialPortSelect.disabled = true;
-    } catch (error) {
-      addLogEntry('ERROR', 'Failed to connect: ' + error.message);
-    }
-  });
-
-  disconnectBtn.addEventListener('click', async () => {
-    try {
-      await window.electronAPI.closeSerialPort();
-      connectBtn.style.display = 'inline-block';
-      disconnectBtn.style.display = 'none';
-      serialPortSelect.disabled = false;
-    } catch (error) {
-      addLogEntry('ERROR', 'Failed to disconnect: ' + error.message);
-    }
-  });
-
-  refreshBtn.addEventListener('click', async () => {
-    await loadSerialPorts();
-    addLogEntry('SYSTEM', 'Serial ports refreshed');
-  });
-
-  clearBtn.addEventListener('click', () => {
-    allLogs = [];
-    logPanel.innerHTML = '';
-    addLogEntry('SYSTEM', 'Log cleared');
-  });
-
-  autoScrollCheckbox.addEventListener('change', (e) => {
-    autoScroll = e.target.checked;
-  });
-
-  filterSelect.addEventListener('change', (e) => {
-    currentFilter = e.target.value;
-    applyFilter();
-  });
-
-  // Listen for log messages from main process
-  window.electronAPI.onLog((data) => {
-    addLogEntry(data.source, data.message, data.data);
-  });
-
-  // Listen for connection status updates
-  window.electronAPI.onConnectionStatus((status) => {
-    updateConnectionStatus(status);
-  });
-}
-
-// Load initial connection status
-async function loadConnectionStatus() {
+async function connectSerial() {
+  const selectedPort = serialPortSelect.value;
+  if (!selectedPort) {
+    alert('Please select a serial port');
+    return;
+  }
+  
   try {
-    const status = await window.electronAPI.getConnectionStatus();
-    updateConnectionStatus(status);
+    await window.electronAPI.openSerialPort(selectedPort);
+    addLogEntry(`Connecting to ${selectedPort}...`, 'SYSTEM');
   } catch (error) {
-    console.error('Failed to load connection status:', error);
+    console.error('Error connecting to serial port:', error);
+    addLogEntry('Error connecting to serial port', 'ERROR');
   }
 }
 
-// Update connection status indicators
-function updateConnectionStatus(status) {
-  // WiFi status
-  if (status.wifi.connected) {
-    wifiStatus.classList.add('connected');
-    if (status.wifi.signalStrength) {
-      wifiSignal.textContent = `(${status.wifi.signalStrength} dBm)`;
-    }
-    if (status.wifi.distance > 0) {
-      wifiDistance.textContent = `~${status.wifi.distance}m`;
-    } else {
-      wifiDistance.textContent = '';
-    }
-  } else {
-    wifiStatus.classList.remove('connected');
-    wifiSignal.textContent = '';
-    wifiDistance.textContent = '';
-  }
-
-  // Relay (USB) status
-  if (status.relayUsb && status.relayUsb.connected) {
-    console.log('Setting USB relay indicator to GREEN');
-    relayUsbStatus.classList.add('connected');
-  } else {
-    relayUsbStatus.classList.remove('connected');
-  }
-
-  // Relay (WiFi) status
-  if (status.relayWifi && status.relayWifi.connected) {
-    console.log('Setting WiFi relay indicator to GREEN');
-    relayWifiStatus.classList.add('connected');
-  } else {
-    relayWifiStatus.classList.remove('connected');
-  }
-
-  // USB status
-  if (status.usb.connected) {
-    usbStatus.classList.add('connected');
-  } else {
-    usbStatus.classList.remove('connected');
+async function disconnectSerial() {
+  try {
+    await window.electronAPI.closeSerialPort();
+    addLogEntry('Disconnected from serial port', 'SYSTEM');
+  } catch (error) {
+    console.error('Error disconnecting from serial port:', error);
+    addLogEntry('Error disconnecting from serial port', 'ERROR');
   }
 }
 
-// Add log entry
-function addLogEntry(source, message, data = null) {
+async function clearLog() {
+  logPanel.innerHTML = '';
+  try {
+    await window.electronAPI.clearLog();
+  } catch (error) {
+    console.error('Error clearing log:', error);
+  }
+}
+
+function addLogEntry(message, source = 'SYSTEM', isESPNowRelay = false, data = null) {
+  const logEntry = document.createElement('div');
+  logEntry.className = `log-entry ${source.toLowerCase()}`;
+  
   const timestamp = new Date().toLocaleTimeString();
   
-  // Detect relay messages by source or content
-  const isESPNowRelay = data?.isESPNowRelay || 
-                        source === 'RELAY_USB' || 
-                        source === 'RELAY_WIFI' ||
-                        (data?.sender_mac && (data?.received_data || data?.relayed_data)) ||
-                        (data?.message && data?.message.includes('ESP-NOW message')) ||
-                        (message && message.includes('sender_mac'));
+  logEntry.innerHTML = `
+    <span class="log-timestamp">[${timestamp}]</span>
+    <span class="log-source">${source}</span>
+    <span class="log-message">${message}</span>
+  `;
   
-  const logEntry = {
-    timestamp,
-    source: source || 'UNKNOWN',
-    message,
-    data,
-    mode: data?.mode,
-    isESPNowRelay
-  };
-
-  allLogs.push(logEntry);
-
-  if (shouldShowLog(logEntry)) {
-    renderLogEntry(logEntry);
+  if (shouldShowLogEntry(source)) {
+    logPanel.appendChild(logEntry);
+    
+    if (autoScroll) {
+      logPanel.scrollTop = logPanel.scrollHeight;
+    }
   }
-
-  if (autoScroll) {
-    logPanel.scrollTop = logPanel.scrollHeight;
+  
+  // Update message statistics
+  messageCount++;
+  lastMessageTime = Date.now();
+  
+  // Update network analysis if WiFi data
+  if (data && data.rssi) {
+    updateSignalBars(data.rssi);
+    if (wifiSignalDetail) {
+      wifiSignalDetail.textContent = `${data.rssi} dBm`;
+    }
+    if (wifiDistanceDetail && data.distance) {
+      wifiDistanceDetail.textContent = `${data.distance} m`;
+    }
   }
 }
 
-// Check if log should be shown based on filter
-function shouldShowLog(logEntry) {
-  if (currentFilter === 'ALL') return true;
-  if (currentFilter === 'RELAY') {
-    // Only show relayed ESP-NOW messages
-    return logEntry.isESPNowRelay === true;
-  }
-  // Handle RELAY_USB and RELAY_WIFI as part of their respective categories
-  if (currentFilter === 'USB' && logEntry.source === 'RELAY_USB') return true;
-  if (currentFilter === 'WIFI' && logEntry.source === 'RELAY_WIFI') return true;
-  
-  return logEntry.source === currentFilter;
+function shouldShowLogEntry(source) {
+  if (logFilter === 'ALL') return true;
+  return source.toUpperCase().includes(logFilter);
 }
 
-// Render a single log entry
-function renderLogEntry(logEntry) {
-  const entry = document.createElement('div');
-  entry.className = `log-entry ${logEntry.source.toLowerCase()}`;
-  
-  // Highlight ESP-NOW relay messages
-  if (logEntry.isESPNowRelay) {
-    entry.classList.add('espnow-relay');
-  }
-
-  const timestampSpan = document.createElement('span');
-  timestampSpan.className = 'log-timestamp';
-  timestampSpan.textContent = `[${logEntry.timestamp}]`;
-
-  const sourceSpan = document.createElement('span');
-  sourceSpan.className = `log-source ${logEntry.source.toLowerCase()}`;
-  
-  // Show source with mode and ESP-NOW indicator
-  let sourceText = logEntry.source;
-  if (logEntry.isESPNowRelay) {
-    if (logEntry.source === 'RELAY_USB') {
-      sourceText = 'USB | RELAY';
-    } else if (logEntry.source === 'RELAY_WIFI') {
-      sourceText = 'WiFi | RELAY';
-    } else {
-      sourceText = 'ESP-NOW | RELAY';
-    }
-  }
-  if (logEntry.mode && !logEntry.isESPNowRelay) {
-    sourceText += ` (${logEntry.mode})`;
-  }
-  sourceSpan.textContent = sourceText;
-
-  const messageSpan = document.createElement('span');
-  messageSpan.className = 'log-message';
-  
-  // Parse and format the message for better readability
-  if (logEntry.data) {
-    // ESP-NOW relay message - just show raw JSON with highlighting
-    if (logEntry.isESPNowRelay || (logEntry.message && logEntry.message.includes('sender_mac'))) {
-      // Just display the raw message as-is
-      messageSpan.textContent = logEntry.message;
-    } 
-    // Regular status message
-    else if (logEntry.data.message) {
-      messageSpan.innerHTML = `
-        <strong>${logEntry.data.message}</strong><br>
-        ${logEntry.data.received_count !== undefined ? `<span class="data-label">Received:</span> ${logEntry.data.received_count} | ` : ''}
-        ${logEntry.data.uptime !== undefined ? `<span class="data-label">Uptime:</span> ${logEntry.data.uptime}s | ` : ''}
-        ${logEntry.data.rssi !== undefined ? `<span class="data-label">RSSI:</span> ${logEntry.data.rssi} dBm` : ''}
-      `;
-    } else {
-      messageSpan.textContent = logEntry.message;
-    }
-  } else {
-    messageSpan.textContent = logEntry.message;
-  }
-
-  entry.appendChild(timestampSpan);
-  entry.appendChild(sourceSpan);
-  entry.appendChild(messageSpan);
-
-  logPanel.appendChild(entry);
-}
-
-// Apply filter to existing logs
-function applyFilter() {
-  logPanel.innerHTML = '';
-  allLogs.forEach(logEntry => {
-    if (shouldShowLog(logEntry)) {
-      renderLogEntry(logEntry);
-    }
+function filterLogEntries() {
+  const entries = logPanel.querySelectorAll('.log-entry');
+  entries.forEach(entry => {
+    const source = entry.querySelector('.log-source').textContent;
+    entry.style.display = shouldShowLogEntry(source) ? 'flex' : 'none';
   });
+}
 
-  if (autoScroll) {
-    logPanel.scrollTop = logPanel.scrollHeight;
+function updateConnectionStatus(status) {
+  // Update status indicators
+  updateStatusIndicator(wifiStatus, status.wifi?.connected);
+  updateStatusIndicator(relayUsbStatus, status.relayUsb?.connected);
+  updateStatusIndicator(relayWifiStatus, status.relayWifi?.connected);
+  updateStatusIndicator(usbStatus, status.usb?.connected);
+  
+  // Update connection state
+  isConnected = status.usb?.connected || false;
+  
+  // Update UI based on connection state
+  if (isConnected) {
+    connectBtn.style.display = 'none';
+    disconnectBtn.style.display = 'inline-block';
+  } else {
+    connectBtn.style.display = 'inline-block';
+    disconnectBtn.style.display = 'none';
   }
 }
 
-// Start the app
-init();
+function updateStatusIndicator(indicator, connected) {
+  if (!indicator) return;
+  
+  indicator.className = 'status-indicator';
+  if (connected) {
+    indicator.classList.add('connected');
+  } else {
+    indicator.classList.add('disconnected');
+  }
+}
+
+// IPC Event listeners
+window.electronAPI.onLog((logData) => {
+  addLogEntry(logData.message, logData.source, logData.isESPNowRelay, logData.data);
+  addActivityItem(logData.message, logData.source);
+});
+
+window.electronAPI.onConnectionStatus((status) => {
+  connectionStatus = status;
+  updateConnectionStatus(status);
+});
+
+window.electronAPI.onGatewayStats((stats) => {
+  gatewayStats = stats;
+  updateDashboard();
+});

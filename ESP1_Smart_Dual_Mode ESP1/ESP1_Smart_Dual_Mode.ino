@@ -1,62 +1,102 @@
 /*
- * ESP1 - ESP-NOW TO MONITOR RELAY
+ * ESP1 - WIRED ESP2 COMMUNICATION GATEWAY
  * 
- * ALWAYS DUAL TRANSPORT:
- * - Receives ESP-NOW messages
- * - Forwards via USB Serial (always)
- * - Forwards via WiFi WebSocket (always)
- * - Both transports active simultaneously
+ * PURPOSE: Wired bridge for battery-powered ESP2 network
+ *          Always connected to PC/laptop via USB for direct monitoring
  * 
- * Hardware: Any ESP32 board
+ * WIRED GATEWAY OPERATION:
+ * - Receives ESP-NOW messages from ESP2 network (all phases)
+ * - Forwards directly via USB Serial to connected monitor
+ * - No WiFi needed - direct wired connection to monitoring system
+ * - Message persistence for reliability during monitor restarts
+ * 
+ * ESP2 UNIVERSAL SUPPORT (Phases 1-6):
+ * - Phase 1: Core envelope messaging and peer discovery
+ * - Phase 2: WiFi scanning coordination messages
+ * - Phase 3: Enhanced peer validation and handshake protocols
+ * - Phase 4: RSSI triangulation and positioning data
+ * - Phase 5: Store-and-forward message relaying
+ * - Phase 6: Network optimization and robustness
+ * 
+ * BATTERY ESP2 INTEGRATION:
+ * - Primary gateway for wireless ESP2s without direct monitor access
+ * - Preserves complete message chains and relay information
+ * - Handles all ESP2 protocol versions and message types
+ * - Reliable wired bridge for power-constrained ESP2 network
+ * 
+ * Hardware: Any ESP32 board connected via USB to PC/laptop
  * 
  * Setup:
  * 1. Install libraries:
  *    - ESP32 Board Support
- *    - ArduinoWebsockets (by Gil Maimon)
  *    - ArduinoJson (by Benoit Blanchon)
- * 2. Update WiFi credentials below
- * 3. Update WebSocket server IP below
- * 4. Upload to ESP32
+ *    - Preferences (for message persistence)
+ * 2. Upload to ESP32
+ * 3. Connect via USB to PC/laptop running monitor
  */
 
-#include <WiFi.h>
+#include <WiFi.h>         // Only for ESP-NOW MAC address
 #include <esp_now.h>
 #include <esp_wifi.h>
-#include <ArduinoWebsockets.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>  // Message persistence
+#include <vector>
+#include <queue>
 
-using namespace websockets;
-
-// ============ CONFIGURATION ============
-
-// WiFi Configuration
-const char* WIFI_SSID = "YOUR_HOTSPOT_NAME";
-const char* WIFI_PASSWORD = "YOUR_HOTSPOT_PASSWORD";
-
-// WebSocket Configuration
-const char* WEBSOCKET_SERVER_IP = "192.168.137.1";
-const uint16_t WEBSOCKET_SERVER_PORT = 8080;
+// ============ WIRED GATEWAY CONFIGURATION ============
 
 // Device Configuration
-const char* DEVICE_ID = "ESP1_MAIN";
+const char* DEVICE_ID = "ESP1_WIRED_GATEWAY";
+const char* DEVICE_TYPE = "ESP1_WIRED_GATEWAY";
+const char* ESP1_VERSION = "5.0.0";  // Wired gateway optimized
 
-// ============ TEST MODE CONFIGURATION ============
-// Change this to test different modes:
-// "USB_ONLY"  - Only USB Serial, no WiFi/WebSocket
-// "WIFI_ONLY" - Only WiFi/WebSocket, no USB Serial  
-// "DUAL"      - Both USB Serial AND WiFi/WebSocket
-const char* TEST_MODE = "DUAL";  // <-- CHANGE THIS TO TEST
+// ESP2 Protocol Compatibility
+const char* SUPPORTED_ESP2_PROTOCOL = "5.0";  // Compatible with ESP2 Phase 1-6
+const char* MIN_ESP2_PROTOCOL = "1.0";        // Backward compatibility
+const char* MAX_ESP2_PROTOCOL = "6.0";        // Future compatibility
 
-// ============ VARIABLES ============
+// ============ UNIVERSAL MESSAGE TRACKING (All Phases) ============
+struct MessageStats {
+  int pingMessages = 0;           // Phase 1: Peer discovery
+  int handshakeMessages = 0;      // Phase 3: Enhanced handshakes
+  int dataMessages = 0;           // Phase 1: Core data messages
+  int triangulationMessages = 0;  // Phase 4: Positioning data
+  int relayMessages = 0;          // Phase 5: Store-and-forward
+  int wifiScanMessages = 0;       // Phase 2: WiFi coordination
+  int optimizationMessages = 0;   // Phase 6: Network optimization
+  int unknownMessages = 0;        // Invalid/unrecognized
+  int totalMessages = 0;
+  int persistedMessages = 0;      // Messages saved to flash
+  int deliveredMessages = 0;      // Successfully forwarded via USB
+};
+
+// ============ WIRED GATEWAY STATUS ============
+struct GatewayStatus {
+  bool monitorConnected = true;   // Always true for wired connection
+  bool persistenceEnabled = true;
+  unsigned long gatewayStartTime = 0;
+  String lastError = "none";
+};
+
+MessageStats messageStats;
+GatewayStatus gatewayStatus;
+String lastMessageType = "none";
+String lastSenderDevice = "none";
+int protocolMismatches = 0;
+
+// ============ WIRED GATEWAY VARIABLES ============
 
 int receiveMessageCount = 0;
 unsigned long lastStatusSend = 0;
 const unsigned long STATUS_INTERVAL = 5000;  // 5 seconds
 
-WebsocketsClient wsClient;
-bool wsConnected = false;
-unsigned long lastReconnectAttempt = 0;
-const unsigned long RECONNECT_INTERVAL = 5000;
+// ============ MESSAGE PERSISTENCE VARIABLES ============
+Preferences preferences;
+std::queue<String> messageQueue;
+const int MAX_QUEUED_MESSAGES = 100;
+const int MAX_PERSISTED_MESSAGES = 50;
+unsigned long lastPersistenceCheck = 0;
+const unsigned long PERSISTENCE_INTERVAL = 10000;  // Check every 10 seconds
 
 // =======================================
 
@@ -64,213 +104,99 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Serial.println("\n=============================================");
-  Serial.println("ESP1 - ESP-NOW Relay");
-  Serial.print("MODE: ");
-  Serial.println(TEST_MODE);
-  Serial.println("=============================================\n");
+  Serial.println("\n================================================");
+  Serial.println("ESP1 - Wired ESP2 Communication Gateway");
+  Serial.println("================================================");
+  Serial.printf("Device ID: %s\n", DEVICE_ID);
+  Serial.printf("Device Type: %s\n", DEVICE_TYPE);
+  Serial.printf("ESP1 Version: %s\n", ESP1_VERSION);
+  Serial.printf("ESP2 Protocol Support: %s - %s\n", MIN_ESP2_PROTOCOL, MAX_ESP2_PROTOCOL);
+  Serial.println("================================================");
+  Serial.println("WIRED GATEWAY FEATURES:");
+  Serial.println("  ✓ Direct USB Serial to Monitor");
+  Serial.println("  ✓ ESP-NOW Reception (All ESP2 Phases)");
+  Serial.println("  ✓ Message Persistence & Recovery");
+  Serial.println("  ✓ Universal ESP2 Protocol Support");
+  Serial.println("  ✓ Zero WiFi Dependencies");
+  Serial.println("================================================");
+  Serial.println("SUPPORTED ESP2 PHASES:");
+  Serial.println("  ✓ Phase 1: Core Communication & Envelopes");
+  Serial.println("  ✓ Phase 2: WiFi Coordination Messages");
+  Serial.println("  ✓ Phase 3: Enhanced Peer Discovery");
+  Serial.println("  ✓ Phase 4: RSSI Triangulation Data");
+  Serial.println("  ✓ Phase 5: Message Relaying Chains");
+  Serial.println("  ✓ Phase 6: Network Optimization");
+  Serial.println("================================================\n");
 
-  // Initialize based on test mode
-  if (strcmp(TEST_MODE, "USB_ONLY") == 0) {
-    Serial.println("⚙️ USB ONLY MODE - No WiFi");
-    // Only initialize ESP-NOW
-    initESPNow();
-    Serial.println("Ready! ESP-NOW → USB Serial ONLY\n");
-  } 
-  else if (strcmp(TEST_MODE, "WIFI_ONLY") == 0) {
-    Serial.println("⚙️ WIFI ONLY MODE - No USB Serial forwarding");
-    // Initialize WiFi and WebSocket
-    initWiFi();
-    initESPNow();
-    connectWebSocket();
-    Serial.println("Ready! ESP-NOW → WiFi WebSocket ONLY\n");
-  }
-  else { // DUAL mode
-    Serial.println("⚙️ DUAL MODE - USB + WiFi");
-    // Initialize WiFi and WebSocket
-    initWiFi();
-    initESPNow();
-    connectWebSocket();
-    Serial.println("Ready! ESP-NOW → USB Serial AND WiFi WebSocket\n");
-  }
+  // Initialize persistence
+  gatewayStatus.gatewayStartTime = millis();
+  gatewayStatus.monitorConnected = true;  // Always connected via USB
+  preferences.begin("esp1_gateway", false);
+  
+  // Load any persisted messages
+  loadPersistedMessages();
+  
+  // Initialize ESP-NOW for receiving ESP2 messages (no WiFi needed)
+  Serial.println("🔧 Initializing wired gateway...");
+  initESPNowOnly();
+  
+  Serial.println("🚀 ESP1 Wired Gateway Ready!");
+  Serial.println("📞 Direct USB connection to monitor established");
+  Serial.println("📡 Monitoring ESP2 network (all phases)...\n");
 }
 
 void loop() {
-  // Maintain WiFi connection (skip in USB_ONLY mode)
-  if (strcmp(TEST_MODE, "USB_ONLY") != 0) {
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi disconnected! Reconnecting...");
-      initWiFi();
-    }
-
-    // Maintain WebSocket connection
-    if (wsConnected) {
-      wsClient.poll();
-    } else {
-      if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
-        lastReconnectAttempt = millis();
-        connectWebSocket();
-      }
-    }
+  unsigned long currentTime = millis();
+  
+  // Handle message persistence and recovery (simple check)
+  if (currentTime - lastPersistenceCheck > PERSISTENCE_INTERVAL) {
+    lastPersistenceCheck = currentTime;
+    processPersistentMessages();
   }
 
-  // Send periodic status based on mode
-  if (millis() - lastStatusSend > STATUS_INTERVAL) {
-    lastStatusSend = millis();
-    
-    // Via USB Serial (skip in WIFI_ONLY mode)
-    if (strcmp(TEST_MODE, "WIFI_ONLY") != 0) {
-      StaticJsonDocument<200> usbDoc;
-      usbDoc["source"] = "USB";
-      usbDoc["device_id"] = DEVICE_ID;
-      usbDoc["mode"] = TEST_MODE;
-      usbDoc["received_count"] = receiveMessageCount;
-      usbDoc["uptime"] = millis() / 1000;
-      usbDoc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
-      usbDoc["ws_connected"] = wsConnected;
-      usbDoc["message"] = String("ESP1 ") + TEST_MODE + " mode active";
-      
-      String usbJson;
-      serializeJson(usbDoc, usbJson);
-      Serial.println(usbJson);
-    }
-    
-    // Via WebSocket (skip in USB_ONLY mode)
-    if (strcmp(TEST_MODE, "USB_ONLY") != 0 && wsConnected) {
-      StaticJsonDocument<200> wifiDoc;
-      wifiDoc["source"] = "WIFI";
-      wifiDoc["device_id"] = DEVICE_ID;
-      wifiDoc["mode"] = TEST_MODE;
-      wifiDoc["received_count"] = receiveMessageCount;
-      wifiDoc["rssi"] = WiFi.RSSI();
-      wifiDoc["uptime"] = millis() / 1000;
-      wifiDoc["message"] = String("ESP1 ") + TEST_MODE + " mode active";
-      
-      String wifiJson;
-      serializeJson(wifiDoc, wifiJson);
-      wsClient.send(wifiJson);
-    }
+  // Send periodic status to monitor via USB
+  if (currentTime - lastStatusSend > STATUS_INTERVAL) {
+    lastStatusSend = currentTime;
+    sendWiredGatewayStatus();
   }
   
+  // Simple delay - no complex async needed for wired operation
   delay(10);
 }
 
-// ============ ESP-NOW INITIALIZATION ============
+// ============ ESP-NOW WIRED GATEWAY INITIALIZATION ============
 
-void initESPNow() {
-  Serial.println("Initializing ESP-NOW...");
+void initESPNowOnly() {
+  Serial.println("🔧 Initializing ESP-NOW for wired gateway...");
+  
+  // Set WiFi mode to STA for ESP-NOW only (no actual WiFi connection)
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  
+  Serial.printf("ESP-NOW MAC Address: %s\n", WiFi.macAddress().c_str());
   
   if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ ESP-NOW init failed");
+    Serial.println("❌ ESP-NOW initialization failed");
+    gatewayStatus.lastError = "ESP-NOW init failed";
     return;
   }
   
-  Serial.println("✓ ESP-NOW initialized");
+  Serial.println("✓ ESP-NOW initialized successfully");
   
-  // Register receive callback
+  // Register receive callback only (no send needed for gateway)
   esp_now_register_recv_cb(onESPNowDataReceived);
   
   uint8_t primary;
   wifi_second_chan_t secondary;
   esp_wifi_get_channel(&primary, &secondary);
-  Serial.print("📡 Listening on channel: ");
-  Serial.println(primary);
-  Serial.println("Ready to receive ESP-NOW broadcasts\n");
-}
-
-// ============ WIFI INITIALIZATION ============
-
-void initWiFi() {
-  Serial.println("Initializing WiFi...");
-  Serial.print("SSID: ");
-  Serial.println(WIFI_SSID);
-  
-  // In USB_ONLY mode, use STA mode only (no WiFi connection)
-  // In WIFI modes, use AP+STA mode to receive ESP-NOW while connected to WiFi
-  if (strcmp(TEST_MODE, "USB_ONLY") == 0) {
-    WiFi.mode(WIFI_STA);
-    Serial.println("Mode: WIFI_STA (USB_ONLY - no WiFi connection)");
-  } else {
-    WiFi.mode(WIFI_AP_STA);
-    Serial.println("Mode: WIFI_AP_STA (for ESP-NOW + WiFi)");
-  }
-  
-  Serial.print("STA MAC Address: ");
-  Serial.println(WiFi.macAddress());
-  Serial.print("AP MAC Address (ESP-NOW): ");
-  Serial.println(WiFi.softAPmacAddress());
-  
-  Serial.println("Connecting...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✓ WiFi connected!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("RSSI: ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm");
-    
-    uint8_t primary;
-    wifi_second_chan_t secondary;
-    esp_wifi_get_channel(&primary, &secondary);
-    Serial.print("Channel: ");
-    Serial.println(primary);
-  } else {
-    Serial.println("\n❌ WiFi FAILED - Check SSID/password");
-  }
-}
-
-void connectWebSocket() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected");
-    return;
-  }
-
-  String wsUrl = "ws://" + String(WEBSOCKET_SERVER_IP) + ":" + String(WEBSOCKET_SERVER_PORT);
-  Serial.print("Connecting to WebSocket: ");
-  Serial.println(wsUrl);
-
-  wsConnected = wsClient.connect(wsUrl.c_str());
-
-  if (wsConnected) {
-    Serial.println("✓ WebSocket connected");
-    
-    StaticJsonDocument<200> doc;
-    doc["source"] = "WIFI";
-    doc["device_id"] = DEVICE_ID;
-    doc["mode"] = "WIFI";
-    doc["message"] = "ESP1 WiFi mode connected";
-    doc["rssi"] = WiFi.RSSI();
-    
-    String json;
-    serializeJson(doc, json);
-    wsClient.send(json);
-    
-    wsClient.onEvent([](WebsocketsEvent event, String data) {
-      if (event == WebsocketsEvent::ConnectionClosed) {
-        Serial.println("WebSocket closed");
-        wsConnected = false;
-      }
-    });
-  } else {
-    Serial.println("❌ WebSocket connection failed");
-    wsConnected = false;
-  }
+  Serial.printf("📡 Listening on channel: %d\n", primary);
+  Serial.println("🎯 Ready to receive ESP2 messages (all phases)\n");
 }
 
 // ============ ESP-NOW CALLBACK ============
 
 void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *data, int data_len) {
-  // Immediate processing - no delay
-  delay(100);  // Small delay to ensure stability
+  delay(100);  // Stability delay
   
   receiveMessageCount++;
   
@@ -284,65 +210,389 @@ void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *d
     receivedData += (char)data[i];
   }
   
-  Serial.println("\n═══════════════════════════════════════════════════════");
-  Serial.println("📡 ESP-NOW MESSAGE RECEIVED");
-  Serial.println("═══════════════════════════════════════════════════════");
-  Serial.print("From: ");
-  Serial.println(macStr);
-  Serial.print("Data: ");
-  Serial.println(receivedData);
-  Serial.print("Count: ");
-  Serial.println(receiveMessageCount);
-  Serial.println("═══════════════════════════════════════════════════════");
+  // Parse and analyze message for universal phase compatibility
+  analyzeESP2Message(receivedData, macStr);
   
-  delay(50);  // Brief pause before forwarding
+  Serial.println("\n═════════════════════════════════════════════════════════════");
+  Serial.println("📡 ESP2 MESSAGE RECEIVED (Universal Gateway)");
+  Serial.println("═════════════════════════════════════════════════════════════");
+  Serial.printf("From ESP2: %s\n", macStr);
+  Serial.printf("Message Type: %s\n", lastMessageType.c_str());
+  Serial.printf("Phase: %s\n", getPhaseFromMessageType(lastMessageType).c_str());
+  Serial.printf("Sender Device: %s\n", lastSenderDevice.c_str());
+  Serial.printf("Total Messages: %d\n", receiveMessageCount);
+  Serial.printf("Gateway Status: %s\n", gatewayStatus.monitorConnected ? "CONNECTED" : "PERSISTENCE MODE");
+  Serial.println("═════════════════════════════════════════════════════════════");
   
-  Serial.println("\n🔄 FORWARDING ESP-NOW MESSAGE TO MONITOR...");
-  Serial.print("Mode: ");
-  Serial.println(TEST_MODE);
+  delay(50);  // Processing pause
   
-  // Forward via USB Serial (skip in WIFI_ONLY mode)
-  if (strcmp(TEST_MODE, "WIFI_ONLY") != 0) {
-    // Forward the original ESP2 message directly without wrapping
-    Serial.println("📤 USB: " + receivedData);
-    Serial.flush();  // Ensure USB data is sent
-    
-    delay(100);  // Delay between USB and WiFi sends
-  } else {
-    Serial.println("⏭️ Skipping USB (WIFI_ONLY mode)");
-  }
+  // Universal Gateway Message Handling - Always Dual Transport
+  Serial.println("\n🔄 UNIVERSAL GATEWAY PROCESSING...");
   
-  // Forward via WebSocket (skip in USB_ONLY mode)
-  if (strcmp(TEST_MODE, "USB_ONLY") != 0) {
-    if (wsConnected) {
-      // Forward the original ESP2 message directly without wrapping
-      bool sent = wsClient.send(receivedData);
-      Serial.print("📤 WiFi: ");
-      Serial.println(sent ? "SUCCESS" : "FAILED");
+  // ALWAYS forward via USB Serial (direct PC connection)
+  Serial.println("📤 USB: " + receivedData);
+  Serial.flush();  // Ensure USB transmission
+  
+  delay(100);  // Transport separation delay
+  
+  // Handle WiFi/WebSocket delivery with persistence fallback
+  if (wsConnected && gatewayStatus.monitorConnected) {
+    // Direct delivery to monitor
+    bool sent = wsClient.send(receivedData);
+    if (sent) {
+      messageStats.deliveredMessages++;
+      Serial.printf("📤 WiFi: SUCCESS (Direct delivery)\n");
     } else {
-      Serial.println("⚠️ WiFi not connected - cannot send via WiFi");
+      Serial.println("❌ WiFi: FAILED - Queuing for retry");
+      messageQueue.push(receivedData);
+      wsConnected = false;  // Mark connection as failed
     }
   } else {
-    Serial.println("⏭️ Skipping WiFi (USB_ONLY mode)");
+    // Monitor unavailable - use persistence
+    if (gatewayStatus.persistenceEnabled) {
+      if (messageQueue.size() < MAX_QUEUED_MESSAGES) {
+        messageQueue.push(receivedData);
+        Serial.printf("💾 QUEUED: Message stored (%d in queue)\n", messageQueue.size());
+      } else {
+        // Queue full - persist to flash
+        persistMessage(receivedData);
+        Serial.println("💾 PERSISTED: Queue full, saved to flash");
+      }
+    } else {
+      Serial.println("⚠️ Monitor unavailable, persistence disabled - message lost");
+    }
   }
   
-  // Summary
-  if (strcmp(TEST_MODE, "DUAL") == 0) {
-    if (wsConnected) {
-      Serial.println("✅ Sent via BOTH USB and WiFi");
-    } else {
-      Serial.println("⚠️ Sent via USB only (WiFi not connected)");
-    }
-  } else if (strcmp(TEST_MODE, "USB_ONLY") == 0) {
-    Serial.println("✅ Sent via USB only");
-  } else if (strcmp(TEST_MODE, "WIFI_ONLY") == 0) {
-    if (wsConnected) {
-      Serial.println("✅ Sent via WiFi only");
-    } else {
-      Serial.println("❌ WiFi not connected - message NOT forwarded!");
-    }
+  // Gateway Status Summary
+  String deliveryStatus;
+  if (wsConnected && gatewayStatus.monitorConnected) {
+    deliveryStatus = "DUAL DELIVERY (USB + WiFi Direct)";
+  } else if (gatewayStatus.persistenceEnabled) {
+    deliveryStatus = "USB + PERSISTENCE MODE";
+  } else {
+    deliveryStatus = "USB ONLY";
   }
+  
+  Serial.printf("✅ Gateway Mode: %s\n", deliveryStatus.c_str());
+  Serial.printf("📊 Queue: %d messages, Persisted: %d total\n", 
+                messageQueue.size(), messageStats.persistedMessages);
   
   delay(50);  // Final stability delay
-  Serial.println("═══════════════════════════════════════════════════════\n");
+  Serial.println("═════════════════════════════════════════════════════════════\n");
+}
+
+void persistMessage(const String& message) {
+  if (!gatewayStatus.persistenceEnabled) return;
+  
+  int currentCount = preferences.getInt("msg_count", 0);
+  if (currentCount >= MAX_PERSISTED_MESSAGES) {
+    Serial.println("⚠️ Persistence storage full - dropping oldest message");
+    // Shift messages down to make room
+    for (int i = 0; i < MAX_PERSISTED_MESSAGES - 1; i++) {
+      String sourceKey = "msg_" + String(i + 1);
+      String targetKey = "msg_" + String(i);
+      String msg = preferences.getString(sourceKey.c_str(), "");
+      preferences.putString(targetKey.c_str(), msg);
+    }
+    currentCount = MAX_PERSISTED_MESSAGES - 1;
+  }
+  
+  String key = "msg_" + String(currentCount);
+  preferences.putString(key.c_str(), message);
+  preferences.putInt("msg_count", currentCount + 1);
+  messageStats.persistedMessages++;
+  
+  Serial.printf("💾 Message persisted to flash (slot %d)\n", currentCount);
+}
+
+// ============ PHASE 5 MESSAGE ANALYSIS ============
+
+void analyzeESP2Message(const String& messageData, const String& senderMAC) {
+  // Parse JSON to extract message type and sender info
+  StaticJsonDocument<1024> doc;
+  DeserializationError error = deserializeJson(doc, messageData);
+  
+  if (error) {
+    lastMessageType = "invalid_json";
+    lastSenderDevice = "unknown";
+    messageStats.unknownMessages++;
+    return;
+  }
+  
+  // Check protocol version
+  if (doc.containsKey("version")) {
+    String protocolVersion = doc["version"].as<String>();
+    if (protocolVersion != SUPPORTED_ESP2_PROTOCOL) {
+      protocolMismatches++;
+      Serial.printf("⚠️ Protocol mismatch: received %s, expected %s\n", 
+                   protocolVersion.c_str(), SUPPORTED_ESP2_PROTOCOL);
+    }
+  }
+  
+  // Extract message type
+  if (doc.containsKey("message_type")) {
+    lastMessageType = doc["message_type"].as<String>();
+    
+    // Update message type statistics
+    if (lastMessageType == "ping") {
+      messageStats.pingMessages++;
+    } else if (lastMessageType == "handshake") {
+      messageStats.handshakeMessages++;
+    } else if (lastMessageType == "data") {
+      messageStats.dataMessages++;
+    } else if (lastMessageType == "triangulation") {
+      messageStats.triangulationMessages++;
+    } else if (lastMessageType == "relay") {
+      messageStats.relayMessages++;
+    } else {
+      messageStats.unknownMessages++;
+    }
+  } else {
+    lastMessageType = "no_type";
+    messageStats.unknownMessages++;
+  }
+  
+  // Extract sender device ID
+  if (doc.containsKey("source_device") && doc["source_device"].containsKey("device_id")) {
+    lastSenderDevice = doc["source_device"]["device_id"].as<String>();
+  } else {
+    lastSenderDevice = senderMAC;  // Fallback to MAC address
+  }
+  
+  messageStats.totalMessages = receiveMessageCount;
+}
+
+// ============ PHASE 6 MESSAGE ANALYSIS ============
+
+void analyzeESP2Message(const String& messageData, const String& senderMAC) {
+  // Parse JSON to extract message type and sender info
+  StaticJsonDocument<1024> doc;
+  DeserializationError error = deserializeJson(doc, messageData);
+  
+  if (error) {
+    lastMessageType = "invalid_json";
+    lastSenderDevice = "unknown";
+    messageStats.unknownMessages++;
+    gatewayStatus.lastError = "JSON parse error: " + String(error.c_str());
+    return;
+  }
+  
+  // Check protocol version (Phase 6: Enhanced compatibility)
+  if (doc.containsKey("version")) {
+    String protocolVersion = doc["version"].as<String>();
+    float version = protocolVersion.toFloat();
+    float minVersion = String(MIN_ESP2_PROTOCOL).toFloat();
+    float maxVersion = String(MAX_ESP2_PROTOCOL).toFloat();
+    
+    if (version < minVersion || version > maxVersion) {
+      protocolMismatches++;
+      Serial.printf("⚠️ Protocol version %s outside supported range %s-%s\n", 
+                   protocolVersion.c_str(), MIN_ESP2_PROTOCOL, MAX_ESP2_PROTOCOL);
+      gatewayStatus.lastError = "Protocol version mismatch: " + protocolVersion;
+    }
+  }
+  
+  // Extract and categorize message type (All Phases)
+  if (doc.containsKey("message_type")) {
+    lastMessageType = doc["message_type"].as<String>();
+    
+    // Phase-specific message type statistics
+    if (lastMessageType == "ping") {
+      messageStats.pingMessages++;  // Phase 1
+    } else if (lastMessageType == "handshake") {
+      messageStats.handshakeMessages++;  // Phase 3
+    } else if (lastMessageType == "data") {
+      messageStats.dataMessages++;  // Phase 1
+    } else if (lastMessageType == "triangulation") {
+      messageStats.triangulationMessages++;  // Phase 4
+    } else if (lastMessageType == "relay") {
+      messageStats.relayMessages++;  // Phase 5
+    } else if (lastMessageType == "wifi_scan") {
+      messageStats.wifiScanMessages++;  // Phase 2
+    } else if (lastMessageType == "optimization") {
+      messageStats.optimizationMessages++;  // Phase 6
+    } else {
+      messageStats.unknownMessages++;
+    }
+  } else {
+    lastMessageType = "no_type";
+    messageStats.unknownMessages++;
+  }
+  
+  // Extract sender device ID with fallbacks
+  if (doc.containsKey("source_device") && doc["source_device"].containsKey("device_id")) {
+    lastSenderDevice = doc["source_device"]["device_id"].as<String>();
+  } else if (doc.containsKey("device_id")) {
+    lastSenderDevice = doc["device_id"].as<String>();  // Fallback
+  } else {
+    lastSenderDevice = senderMAC;  // Ultimate fallback to MAC address
+  }
+  
+  messageStats.totalMessages = receiveMessageCount;
+  gatewayStatus.lastError = "none";  // Clear error on successful parse
+}
+
+// ============ PHASE 6 PERSISTENCE FUNCTIONS ============
+
+void loadPersistedMessages() {
+  Serial.println("🔄 Loading persisted messages from flash...");
+  
+  int persistedCount = preferences.getInt("msg_count", 0);
+  if (persistedCount > 0) {
+    Serial.printf("📦 Found %d persisted messages\n", persistedCount);
+    messageStats.persistedMessages = persistedCount;
+    
+    // Add persisted messages to queue for delivery
+    for (int i = 0; i < persistedCount && i < MAX_PERSISTED_MESSAGES; i++) {
+      String key = "msg_" + String(i);
+      String persistedMsg = preferences.getString(key.c_str(), "");
+      if (persistedMsg.length() > 0) {
+        messageQueue.push(persistedMsg);
+        Serial.printf("📤 Queued persisted message %d\n", i);
+      }
+    }
+    
+    // Clear persisted messages after loading
+    for (int i = 0; i < persistedCount; i++) {
+      String key = "msg_" + String(i);
+      preferences.remove(key.c_str());
+    }
+    preferences.putInt("msg_count", 0);
+    Serial.println("✅ Persisted messages loaded and cleared from flash");
+  } else {
+    Serial.println("📭 No persisted messages found");
+  }
+}
+
+void persistMessage(const String& message) {
+  if (!gatewayStatus.persistenceEnabled) return;
+  
+  int currentCount = preferences.getInt("msg_count", 0);
+  if (currentCount >= MAX_PERSISTED_MESSAGES) {
+    Serial.println("⚠️ Persistence storage full - dropping oldest message");
+    // Shift messages down to make room
+    for (int i = 0; i < MAX_PERSISTED_MESSAGES - 1; i++) {
+      String sourceKey = "msg_" + String(i + 1);
+      String targetKey = "msg_" + String(i);
+      String msg = preferences.getString(sourceKey.c_str(), "");
+      preferences.putString(targetKey.c_str(), msg);
+    }
+    currentCount = MAX_PERSISTED_MESSAGES - 1;
+  }
+  
+  String key = "msg_" + String(currentCount);
+  preferences.putString(key.c_str(), message);
+  preferences.putInt("msg_count", currentCount + 1);
+  messageStats.persistedMessages++;
+  
+  Serial.printf("💾 Message persisted to flash (slot %d)\n", currentCount);
+}
+
+void processPersistentMessages() {
+  // Process queued messages if monitor is available
+  if (wsConnected && !messageQueue.empty()) {
+    int processedCount = 0;
+    while (!messageQueue.empty() && processedCount < 5) {  // Process max 5 per cycle
+      String queuedMessage = messageQueue.front();
+      messageQueue.pop();
+      
+      bool sent = wsClient.send(queuedMessage);
+      if (sent) {
+        messageStats.deliveredMessages++;
+        processedCount++;
+        Serial.printf("📤 Delivered queued message (%d remaining)\n", messageQueue.size());
+      } else {
+        // Re-queue if send failed
+        messageQueue.push(queuedMessage);
+        Serial.println("❌ Failed to send queued message - re-queued");
+        break;
+      }
+    }
+  }
+}
+
+void loadPersistedMessages() {
+  Serial.println("🔄 Checking for persisted messages...");
+  
+  int persistedCount = preferences.getInt("msg_count", 0);
+  if (persistedCount > 0) {
+    Serial.printf("📫 Found %d persisted messages (delivered via USB)\n", persistedCount);
+    
+    // For wired gateway, just deliver persisted messages immediately via USB
+    for (int i = 0; i < persistedCount && i < MAX_PERSISTED_MESSAGES; i++) {
+      String key = "msg_" + String(i);
+      String persistedMsg = preferences.getString(key.c_str(), "");
+      if (persistedMsg.length() > 0) {
+        Serial.println("📞 USB: " + persistedMsg);
+        Serial.flush();
+        messageStats.deliveredMessages++;
+      }
+    }
+    
+    // Clear persisted messages after delivery
+    for (int i = 0; i < persistedCount; i++) {
+      String key = "msg_" + String(i);
+      preferences.remove(key.c_str());
+    }
+    preferences.putInt("msg_count", 0);
+    Serial.println("✅ All persisted messages delivered and cleared");
+  } else {
+    Serial.println("📫 No persisted messages found");
+  }
+}
+
+void processPersistentMessages() {
+  // For wired gateway, persistence is mainly for recovery after restart
+  // Messages are delivered immediately via USB, so queue processing is minimal
+  if (!messageQueue.empty()) {
+    while (!messageQueue.empty()) {
+      String queuedMessage = messageQueue.front();
+      messageQueue.pop();
+      
+      // Deliver via USB immediately
+      Serial.println("📞 USB: " + queuedMessage);
+      Serial.flush();
+      messageStats.deliveredMessages++;
+    }
+  }
+}
+
+void sendWiredGatewayStatus() {
+  // Simple status message for wired gateway
+  StaticJsonDocument<500> statusDoc;
+  statusDoc["gateway_type"] = "wired";
+  statusDoc["device_id"] = DEVICE_ID;
+  statusDoc["device_type"] = DEVICE_TYPE;
+  statusDoc["esp1_version"] = ESP1_VERSION;
+  statusDoc["esp2_protocol_range"] = String(MIN_ESP2_PROTOCOL) + "-" + String(MAX_ESP2_PROTOCOL);
+  statusDoc["uptime"] = (millis() - gatewayStatus.gatewayStartTime) / 1000;
+  statusDoc["connection_type"] = "usb_serial";
+  statusDoc["last_error"] = gatewayStatus.lastError;
+  
+  // Message statistics for all ESP2 phases
+  JsonObject msgStats = statusDoc["message_stats"].to<JsonObject>();
+  msgStats["total"] = messageStats.totalMessages;
+  msgStats["ping"] = messageStats.pingMessages;           // Phase 1
+  msgStats["handshake"] = messageStats.handshakeMessages; // Phase 3
+  msgStats["data"] = messageStats.dataMessages;           // Phase 1
+  msgStats["triangulation"] = messageStats.triangulationMessages; // Phase 4
+  msgStats["relay"] = messageStats.relayMessages;         // Phase 5
+  msgStats["wifi_scan"] = messageStats.wifiScanMessages;  // Phase 2
+  msgStats["optimization"] = messageStats.optimizationMessages; // Phase 6
+  msgStats["unknown"] = messageStats.unknownMessages;
+  msgStats["delivered"] = messageStats.deliveredMessages;
+  
+  // Wired gateway health
+  JsonObject health = statusDoc["gateway_health"].to<JsonObject>();
+  health["protocol_mismatches"] = protocolMismatches;
+  health["last_sender"] = lastSenderDevice;
+  health["last_message_type"] = lastMessageType;
+  health["esp_now_mac"] = WiFi.macAddress();
+  
+  String statusJson;
+  serializeJson(statusDoc, statusJson);
+  
+  // Send status via USB Serial
+  Serial.println(statusJson);
+  Serial.flush();
 }

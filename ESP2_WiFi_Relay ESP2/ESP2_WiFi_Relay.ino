@@ -22,15 +22,23 @@
  * Laptop hotspot → use 192.168.137.
  */
 
-#include <WiFi.h>
+#include <WiFi.h> 
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#include <ArduinoWebsockets.h>
+
+using namespace websockets;
 
 // ============ IMPORTANT: WiFi SSID for Channel Detection ============
 // ESP2 scans for this SSID to determine which WiFi channel ESP1 is using
 // MUST match the WiFi network that ESP1 connects to!
 const char* WIFI_SSID = "YOUR_HOTSPOT_NAME";  // <-- CHANGE THIS to match ESP1's WiFi
+const char* WIFI_PASSWORD = "YOUR_HOTSPOT_PASSWORD";  // <-- CHANGE THIS to match ESP1's WiFi
+
+// WebSocket Configuration (for direct WiFi mode)
+const char* WEBSOCKET_SERVER_IP = "192.168.137.1";
+const uint16_t WEBSOCKET_SERVER_PORT = 8080;
 
 // Device Configuration
 const char* DEVICE_ID = "ESP2_SENSOR";
@@ -39,11 +47,30 @@ const char* DEVICE_ID = "ESP2_SENSOR";
 unsigned long lastDataSend = 0;
 const unsigned long DATA_SEND_INTERVAL = 5000; // Send data every 5 seconds
 
+// Mode switching configuration
+unsigned long lastModeSwitch = 0;
+const unsigned long MODE_SWITCH_INTERVAL = 30000; // Switch every 30 seconds
+bool useESPNOW = true; // Start with ESP-NOW mode
+bool wifiConnected = false;
+
 // Message counter
 int messageCount = 0;
 
 // Store detected WiFi channel
 int32_t detectedChannel = 1;
+
+// WebSocket client for direct WiFi communication
+WebsocketsClient wsClient;
+bool wsConnected = false;
+
+// Function declarations
+void initESPNow();
+void sendDataViaESPNOW();
+void sendDataViaWiFi();
+void connectToWiFi();
+void connectWebSocket();
+int32_t getWiFiChannel(const char *ssid);
+void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
 
 void setup() {
   Serial.begin(115200);
@@ -84,19 +111,79 @@ void setup() {
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   }
   
-  // Initialize ESP-NOW
+  // Initialize ESP-NOW for first mode
   initESPNow();
   
-  Serial.println("\nReady! This board will:");
-  Serial.println("  1. Send test/sensor data via ESP-NOW broadcast every 5 seconds");
-  Serial.println("  2. ESP1 MAIN will receive and relay to Electron\n");
+  Serial.println("\nReady! This board will alternate every 30 seconds:");
+  Serial.println("  Mode 1 (30s): ESP-NOW → ESP1 → Monitor");
+  Serial.println("  Mode 2 (30s): WiFi Direct → Monitor");
+  Serial.println("  Starting with ESP-NOW mode...\n");
 }
 
 void loop() {
-  // Send periodic test/sensor data via ESP-NOW
+  // Check if it's time to switch modes
+  if (millis() - lastModeSwitch > MODE_SWITCH_INTERVAL) {
+    lastModeSwitch = millis();
+    useESPNOW = !useESPNOW; // Toggle mode
+    
+    if (useESPNOW) {
+      Serial.println("\n🔄 SWITCHING TO ESP-NOW MODE");
+      Serial.println("═══════════════════════════════════");
+      // Disconnect WiFi and WebSocket
+      if (wsConnected) {
+        wsClient.close();
+        wsConnected = false;
+      }
+      WiFi.disconnect();
+      wifiConnected = false;
+      
+      // Reinitialize for ESP-NOW
+      WiFi.mode(WIFI_STA);
+      WiFi.disconnect();
+      
+      // Re-detect channel and reinitialize ESP-NOW
+      detectedChannel = getWiFiChannel(WIFI_SSID);
+      if (detectedChannel > 0) {
+        esp_wifi_set_promiscuous(true);
+        esp_wifi_set_channel(detectedChannel, WIFI_SECOND_CHAN_NONE);
+        esp_wifi_set_promiscuous(false);
+      } else {
+        esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+      }
+      
+      // Reinitialize ESP-NOW
+      initESPNow();
+      
+      Serial.println("✓ ESP-NOW mode active - messages go via ESP1");
+      Serial.println("═══════════════════════════════════\n");
+    } else {
+      Serial.println("\n🔄 SWITCHING TO WIFI DIRECT MODE");
+      Serial.println("═══════════════════════════════════");
+      // Deinitialize ESP-NOW
+      esp_now_deinit();
+      
+      // Connect to WiFi
+      connectToWiFi();
+      
+      Serial.println("✓ WiFi Direct mode active - messages go directly to monitor");
+      Serial.println("═══════════════════════════════════\n");
+    }
+  }
+
+  // Send periodic data based on current mode
   if (millis() - lastDataSend > DATA_SEND_INTERVAL) {
     lastDataSend = millis();
-    sendDataToESP1();
+    
+    if (useESPNOW) {
+      sendDataViaESPNOW();
+    } else {
+      sendDataViaWiFi();
+    }
+  }
+
+  // Maintain WebSocket connection in WiFi mode
+  if (!useESPNOW && wsConnected) {
+    wsClient.poll();
   }
 
   delay(10);
@@ -177,24 +264,124 @@ void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
 }
 
 // Send test/sensor data to ESP1 via ESP-NOW broadcast
-void sendDataToESP1() {
+void sendDataViaESPNOW() {
   messageCount++;
   String message = "{";
   message += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
   message += "\"message_count\":" + String(messageCount) + ",";
   message += "\"uptime\":" + String(millis() / 1000) + ",";
   message += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
-  message += "\"message\":\"HELLO THIS IS ESP2, sending data from ESP2 to ESP1 MAIN\"";
+  message += "\"communication_mode\":\"ESP-NOW\",";
+  message += "\"message\":\"HELLO THIS IS ESP2, sending data from ESP2 to ESP1 MAIN using ESP-NOW\"";
   message += "}";
-  Serial.println("\n--- Sending Data to ESP1 via ESP-NOW ---");
+  
+  Serial.println("\n--- ESP-NOW Mode: Sending Data via ESP1 ---");
   Serial.println("Message #" + String(messageCount));
   Serial.println("Data: " + message);
+  
   // Broadcast to all ESPs (ESP1 will receive it)
   uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
   if (result == ESP_OK) {
-    Serial.println("Broadcast sent - ESP1 MAIN will receive and relay");
+    Serial.println("✓ ESP-NOW broadcast sent - ESP1 will relay to monitor");
   } else {
-    Serial.println("Error sending broadcast");
+    Serial.println("❌ Error sending ESP-NOW broadcast");
+  }
+}
+
+// Send data directly to monitor via WiFi WebSocket
+void sendDataViaWiFi() {
+  messageCount++;
+  String message = "{";
+  message += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  message += "\"message_count\":" + String(messageCount) + ",";
+  message += "\"uptime\":" + String(millis() / 1000) + ",";
+  message += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+  message += "\"communication_mode\":\"WiFi-Direct\",";
+  message += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+  message += "\"message\":\"HELLO THIS IS ESP2, sending data from ESP2 directly to Monitor using WiFi\"";
+  message += "}";
+  
+  Serial.println("\n--- WiFi Direct Mode: Sending Data Directly ---");
+  Serial.println("Message #" + String(messageCount));
+  Serial.println("Data: " + message);
+  
+  if (wsConnected) {
+    bool sent = wsClient.send(message);
+    if (sent) {
+      Serial.println("✓ WiFi Direct message sent to monitor");
+    } else {
+      Serial.println("❌ Failed to send WiFi Direct message");
+    }
+  } else {
+    Serial.println("❌ WebSocket not connected - attempting reconnect...");
+    connectWebSocket();
+  }
+}
+
+// Connect to WiFi network
+void connectToWiFi() {
+  Serial.println("Connecting to WiFi for direct communication...");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\n✓ WiFi connected for direct communication!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("RSSI: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+    
+    // Connect to WebSocket
+    connectWebSocket();
+  } else {
+    wifiConnected = false;
+    Serial.println("\n❌ WiFi connection failed!");
+  }
+}
+
+// Connect to WebSocket server
+void connectWebSocket() {
+  if (!wifiConnected) {
+    return;
+  }
+  
+  String wsUrl = "ws://" + String(WEBSOCKET_SERVER_IP) + ":" + String(WEBSOCKET_SERVER_PORT);
+  Serial.print("Connecting to WebSocket: ");
+  Serial.println(wsUrl);
+  
+  wsConnected = wsClient.connect(wsUrl.c_str());
+  
+  if (wsConnected) {
+    Serial.println("✓ WebSocket connected for direct communication");
+    
+    // Send initial connection message
+    String connectMsg = "{";
+    connectMsg += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+    connectMsg += "\"communication_mode\":\"WiFi-Direct\",";
+    connectMsg += "\"message\":\"ESP2 WiFi Direct mode connected\",";
+    connectMsg += "\"rssi\":" + String(WiFi.RSSI());
+    connectMsg += "}";
+    
+    wsClient.send(connectMsg);
+    
+    wsClient.onEvent([](WebsocketsEvent event, String data) {
+      if (event == WebsocketsEvent::ConnectionClosed) {
+        Serial.println("WebSocket connection closed");
+        wsConnected = false;
+      }
+    });
+  } else {
+    Serial.println("❌ WebSocket connection failed");
+    wsConnected = false;
   }
 }

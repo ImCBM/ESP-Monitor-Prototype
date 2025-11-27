@@ -3,58 +3,243 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32 Monitor</title>
+  <title>ESP32 Dashboard</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="container">
-    <!-- Header -->
-    <header class="header">
-      <h1>ESP32 Monitor</h1>
-      <div class="connection-status">
-          <div class="status-item">
-            <div class="status-indicator" id="wifi-status"></div>
-            <span>ESP1 WiFi</span>
-            <span class="signal-strength" id="wifi-signal"></span>
-            <span class="distance-info" id="wifi-distance"></span>
-          </div>
-          <div class="status-item">
-            <div class="status-indicator" id="relay-usb-status"></div>
-            <span>Relay (USB)</span>
-          </div>
-          <div class="status-item">
-            <div class="status-indicator" id="relay-wifi-status"></div>
-            <span>Relay (WiFi)</span>
-          </div>
-          <div class="status-item">
-            <div class="status-indicator" id="usb-status"></div>
-            <span>ESP1 USB</span>
-          </div>
+  <div class="dashboard">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h1>ESP32 Dashboard</h1>
       </div>
-    </header>
+      <ul class="nav-menu">
+        <li class="nav-item active" data-tab="overview">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Overview</span>
+        </li>
+        <li class="nav-item" data-tab="devices">
+          <span class="nav-icon">🔧</span>
+          <span class="nav-label">Devices</span>
+        </li>
+        <li class="nav-item" data-tab="network">
+          <span class="nav-icon">📡</span>
+          <span class="nav-label">Network</span>
+        </li>
+        <li class="nav-item" data-tab="logs">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">Logs</span>
+        </li>
+        <li class="nav-item" data-tab="settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Settings</span>
+        </li>
+      </ul>
+      
+      <!-- Connection Status in Sidebar -->
+      <div class="sidebar-footer">
+        <div class="connection-summary">
+          <h3>Connection Status</h3>
+          <div class="status-grid">
+            <div class="status-mini">
+              <div class="status-indicator" id="wifi-status"></div>
+              <span>WiFi</span>
+            </div>
+            <div class="status-mini">
+              <div class="status-indicator" id="relay-usb-status"></div>
+              <span>USB</span>
+            </div>
+            <div class="status-mini">
+              <div class="status-indicator" id="relay-wifi-status"></div>
+              <span>Relay</span>
+            </div>
+            <div class="status-mini">
+              <div class="status-indicator" id="usb-status"></div>
+              <span>Serial</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </nav>
 
-    <!-- Toolbar -->
-    <div class="toolbar">
-      <button id="refresh-btn" class="btn">🔄 Refresh Log</button>
-      <button id="clear-btn" class="btn">🗑️ Clear Log</button>
-      <select id="serial-port-select" class="serial-select">
-        <option value="">Select Serial Port...</option>
-      </select>
-      <button id="connect-btn" class="btn btn-primary">Connect</button>
-      <button id="disconnect-btn" class="btn btn-danger" style="display:none;">Disconnect</button>
-    </div>
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Tab Content: Overview -->
+      <div class="tab-content active" id="overview-tab">
+        <div class="tab-header">
+          <h2>System Overview</h2>
+          <div class="tab-actions">
+            <button id="refresh-overview" class="btn btn-icon">🔄</button>
+          </div>
+        </div>
 
-    <!-- Log Panel -->
-    <div class="log-container">
-      <div class="log-header">
-        <h2>Message Log</h2>
-        <div class="log-controls">
-          <label>
-            <input type="checkbox" id="auto-scroll" checked>
-            Auto-scroll
-          </label>
-          <label>
-            Filter:
+        <!-- Overview Dashboard Cards -->
+        <div class="dashboard-grid">
+          <!-- System Health Card -->
+          <div class="dashboard-card large">
+            <div class="card-header">
+              <h3>System Health</h3>
+              <div class="health-indicator" id="system-health">🟢</div>
+            </div>
+            <div class="card-content">
+              <div class="health-metrics">
+                <div class="metric">
+                  <span class="metric-label">ESP1 Gateway</span>
+                  <span id="gateway-device" class="metric-value">Connecting...</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">ESP2 Devices</span>
+                  <span id="esp2-count" class="metric-value">0</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">Total Messages</span>
+                  <span id="total-messages" class="metric-value">0</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">Uptime</span>
+                  <span id="system-uptime" class="metric-value">00:00:00</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Phase Activity Card -->
+          <div class="dashboard-card">
+            <div class="card-header">
+              <h3>Phase Activity</h3>
+            </div>
+            <div class="card-content">
+              <div class="phase-grid">
+                <div class="phase-indicator" data-phase="1">
+                  <span class="phase-number">P1</span>
+                  <span id="phase1-count" class="phase-count">0</span>
+                  <span class="phase-label">Discovery</span>
+                </div>
+                <div class="phase-indicator" data-phase="3">
+                  <span class="phase-number">P3</span>
+                  <span id="phase3-count" class="phase-count">0</span>
+                  <span class="phase-label">Handshake</span>
+                </div>
+                <div class="phase-indicator" data-phase="4">
+                  <span class="phase-number">P4</span>
+                  <span id="phase4-count" class="phase-count">0</span>
+                  <span class="phase-label">Triangulation</span>
+                </div>
+                <div class="phase-indicator" data-phase="5">
+                  <span class="phase-number">P5</span>
+                  <span id="phase5-count" class="phase-count">0</span>
+                  <span class="phase-label">Relay</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Network Map Card -->
+          <div class="dashboard-card">
+            <div class="card-header">
+              <h3>Network Map</h3>
+            </div>
+            <div class="card-content">
+              <div class="network-visualization">
+                <div class="network-node gateway" id="network-esp1">
+                  <span>ESP1</span>
+                  <span class="node-status">Gateway</span>
+                </div>
+                <div class="network-connections" id="network-connections">
+                  <!-- Dynamic ESP2 nodes will be added here -->
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent Activity Card -->
+          <div class="dashboard-card">
+            <div class="card-header">
+              <h3>Recent Activity</h3>
+            </div>
+            <div class="card-content">
+              <div class="activity-feed" id="recent-activity">
+                <div class="activity-item">
+                  <span class="activity-time">--:--:--</span>
+                  <span class="activity-message">System starting...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Devices -->
+      <div class="tab-content" id="devices-tab">
+        <div class="tab-header">
+          <h2>Device Management</h2>
+        </div>
+        <div class="devices-grid">
+          <div class="device-card esp1">
+            <div class="device-header">
+              <h3>ESP1 Gateway</h3>
+              <div class="device-status" id="esp1-status">🔴</div>
+            </div>
+            <div class="device-details">
+              <div class="device-info">
+                <span class="info-label">Device ID:</span>
+                <span id="gateway-device-detail" class="info-value">Unknown</span>
+              </div>
+              <div class="device-info">
+                <span class="info-label">Version:</span>
+                <span id="gateway-version" class="info-value">-</span>
+              </div>
+              <div class="device-info">
+                <span class="info-label">Protocol Range:</span>
+                <span id="gateway-protocol" class="info-value">-</span>
+              </div>
+            </div>
+          </div>
+          <div class="esp2-devices" id="esp2-devices-list">
+            <!-- ESP2 devices will be dynamically added here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Network -->
+      <div class="tab-content" id="network-tab">
+        <div class="tab-header">
+          <h2>Network Analysis</h2>
+        </div>
+        <div class="network-dashboard">
+          <div class="network-stats">
+            <div class="stat-box">
+              <h4>Signal Strength</h4>
+              <div class="signal-bars">
+                <div class="signal-bar" id="signal-1"></div>
+                <div class="signal-bar" id="signal-2"></div>
+                <div class="signal-bar" id="signal-3"></div>
+                <div class="signal-bar" id="signal-4"></div>
+              </div>
+              <span id="wifi-signal-detail" class="signal-value">-</span>
+            </div>
+            <div class="stat-box">
+              <h4>Distance</h4>
+              <span id="wifi-distance-detail" class="distance-value">- m</span>
+            </div>
+            <div class="stat-box">
+              <h4>Message Rate</h4>
+              <span id="message-rate" class="rate-value">0/sec</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Logs -->
+      <div class="tab-content" id="logs-tab">
+        <div class="tab-header">
+          <h2>System Logs</h2>
+          <div class="log-controls">
+            <button id="clear-btn" class="btn">🗑️ Clear</button>
+            <label>
+              <input type="checkbox" id="auto-scroll" checked>
+              Auto-scroll
+            </label>
             <select id="filter-select">
               <option value="ALL">All</option>
               <option value="WIFI">WiFi</option>
@@ -62,17 +247,62 @@
               <option value="USB">USB</option>
               <option value="SYSTEM">System</option>
             </select>
-          </label>
+          </div>
+        </div>
+        <div class="log-container">
+          <div class="log-panel" id="log-panel">
+            <div class="log-entry system">
+              <span class="log-timestamp">[SYSTEM]</span>
+              <span class="log-source">SYSTEM</span>
+              <span class="log-message">ESP32 Dashboard started. Waiting for connections...</span>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="log-panel" id="log-panel">
-        <div class="log-entry system">
-          <span class="log-timestamp">[SYSTEM]</span>
-          <span class="log-source">SYSTEM</span>
-          <span class="log-message">ESP32 Monitor started. Waiting for connections...</span>
+
+      <!-- Tab Content: Settings -->
+      <div class="tab-content" id="settings-tab">
+        <div class="tab-header">
+          <h2>Settings</h2>
+        </div>
+        <div class="settings-sections">
+          <div class="settings-section">
+            <h3>Connection</h3>
+            <div class="setting-group">
+              <label>Serial Port:</label>
+              <div class="connection-controls">
+                <select id="serial-port-select" class="serial-select">
+                  <option value="">Select Serial Port...</option>
+                </select>
+                <button id="connect-btn" class="btn btn-primary">Connect</button>
+                <button id="disconnect-btn" class="btn btn-danger" style="display:none;">Disconnect</button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3>Monitoring</h3>
+            <div class="setting-group">
+              <label>
+                <input type="checkbox" id="enable-notifications" checked>
+                Enable notifications
+              </label>
+            </div>
+            <div class="setting-group">
+              <label>
+                <input type="checkbox" id="verbose-logging">
+                Verbose logging
+              </label>
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3>Gateway Statistics</h3>
+            <div class="setting-group">
+              <button id="reset-stats" class="btn btn-secondary">Reset Statistics</button>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+    </main>
   </div>
 
   <script src="renderer.js"></script>

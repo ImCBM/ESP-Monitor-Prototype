@@ -18,6 +18,21 @@ let connections = {
   usb: { connected: false }
 };
 
+// ESP Gateway Monitoring
+let gatewayStats = {
+  esp1Connected: false,
+  esp2DeviceCount: 0,
+  messageStats: {
+    ping: 0, handshake: 0, data: 0, triangulation: 0,
+    relay: 0, wifiScan: 0, optimization: 0, unknown: 0,
+    total: 0, delivered: 0
+  },
+  gatewayInfo: {
+    deviceId: 'Unknown', version: 'Unknown', uptime: 0,
+    protocolRange: 'Unknown', lastSender: 'None', lastMessageType: 'None'
+  }
+};
+
 // Estimate distance from RSSI (in meters)
 // Formula: distance = 10^((TxPower - RSSI) / (10 * N))
 // TxPower: typical ESP32 transmission power at 1m = -59 dBm
@@ -228,46 +243,47 @@ function openSerialPort(portPath) {
         });
       }
 
-      // Detect ESP-NOW relay messages from USB
+      // Detect ESP1 Gateway vs ESP2 messages
       let source = parsedData.source || 'USB';
       const mode = parsedData.mode || '';
       
-      // Simple relay detection - just look for the key patterns
-      const isESPNowRelay = message.includes('sender_mac') && message.includes('received_data');
+      // ESP1 Gateway Detection
+      const isESP1Gateway = message.includes('ESP1_WIRED_GATEWAY') || 
+                           message.includes('gateway_type') ||
+                           parsedData.device_id === 'ESP1_WIRED_GATEWAY';
       
-      if (isESPNowRelay) {
-        console.log('ESP-NOW relay detected via brute force method!');
+      // ESP2 Message Detection (Phase 1-6)
+      const isESP2Message = message.includes('ESP2_SENSOR') || 
+                           message.includes('device_id') ||
+                           parsedData.message_type ||
+                           parsedData.version;
+      
+      const isESPNowRelay = isESP2Message && !isESP1Gateway;
+      
+      // Process ESP1 Gateway Status Messages
+      if (isESP1Gateway) {
+        source = 'ESP1_GATEWAY';
+        gatewayStats.esp1Connected = true;
+        processESP1GatewayMessage(parsedData);
+        console.log('ESP1 Gateway status received:', parsedData.device_id || 'Status Update');
       }
       
-      // Update relay connection status when ESP-NOW message detected
+      // Process ESP2 Messages (Phase 1-6)
       if (isESPNowRelay) {
-        console.log('ESP-NOW relay detected via USB! Setting indicator...');
-        console.log('Message contains sender_mac:', !!parsedData.sender_mac);
-        console.log('Message contains received_data:', !!parsedData.received_data);
-        
         source = 'RELAY_USB';
         connections.relayUsb.connected = true;
-        
-        console.log('connections.relayUsb.connected set to:', connections.relayUsb.connected);
+        processESP2Message(parsedData);
+        console.log(`ESP2 ${parsedData.message_type || 'message'} from ${parsedData.source_device?.device_id || 'unknown'} (Phase ${getESP2Phase(parsedData)})}`);
         
         // Clear any existing timeout
         if (connections.relayUsb.timeout) {
           clearTimeout(connections.relayUsb.timeout);
         }
-        
         // Set timeout to clear indicator after 10 seconds of inactivity
         connections.relayUsb.timeout = setTimeout(() => {
-          console.log('Timeout: Clearing USB relay indicator after 10 seconds');
           connections.relayUsb.connected = false;
           sendConnectionStatus();
         }, 10000);
-        
-        // Send status with a small delay to ensure it's processed
-        setTimeout(() => {
-          sendConnectionStatus();
-        }, 100);
-        
-        console.log('RelayUSB status set to:', connections.relayUsb.connected);
       }
       
       sendToRenderer('log', {
@@ -317,6 +333,70 @@ function sendToRenderer(channel, data) {
   }
 }
 
+// ESP Message Processing Functions
+function processESP1GatewayMessage(parsedData) {
+  // Update gateway information
+  if (parsedData.device_id) {
+    gatewayStats.gatewayInfo.deviceId = parsedData.device_id;
+  }
+  if (parsedData.esp1_version) {
+    gatewayStats.gatewayInfo.version = parsedData.esp1_version;
+  }
+  if (parsedData.esp2_protocol_range) {
+    gatewayStats.gatewayInfo.protocolRange = parsedData.esp2_protocol_range;
+  }
+  if (parsedData.uptime) {
+    gatewayStats.gatewayInfo.uptime = parsedData.uptime;
+  }
+  
+  // Update message statistics from gateway
+  if (parsedData.message_stats) {
+    Object.assign(gatewayStats.messageStats, parsedData.message_stats);
+  }
+  
+  // Update gateway health info
+  if (parsedData.gateway_health) {
+    gatewayStats.gatewayInfo.lastSender = parsedData.gateway_health.last_sender || 'None';
+    gatewayStats.gatewayInfo.lastMessageType = parsedData.gateway_health.last_message_type || 'None';
+  }
+}
+
+function processESP2Message(parsedData) {
+  // Update ESP2 message statistics
+  const messageType = parsedData.message_type || 'unknown';
+  if (gatewayStats.messageStats.hasOwnProperty(messageType)) {
+    gatewayStats.messageStats[messageType]++;
+  } else {
+    gatewayStats.messageStats.unknown++;
+  }
+  
+  gatewayStats.messageStats.total++;
+  gatewayStats.messageStats.delivered++;
+  
+  // Update ESP2 device count (simplified)
+  if (parsedData.source_device?.device_id) {
+    gatewayStats.esp2DeviceCount = Math.max(gatewayStats.esp2DeviceCount, 
+      parseInt(parsedData.source_device.device_id.replace(/\D/g, '')) || 1);
+  }
+}
+
+function getESP2Phase(parsedData) {
+  // Determine ESP2 phase from message type
+  const messageType = parsedData.message_type;
+  if (!messageType) return 'Unknown';
+  
+  const phaseMap = {
+    'ping': 1, 'data': 1,
+    'wifi_scan': 2,
+    'handshake': 3,
+    'triangulation': 4,
+    'relay': 5,
+    'optimization': 6
+  };
+  
+  return phaseMap[messageType] || parsedData.data?.phase || 'Unknown';
+}
+
 function sendConnectionStatus() {
   // Create a clean copy for sending (without timeout references)
   const cleanConnections = {
@@ -326,6 +406,9 @@ function sendConnectionStatus() {
     usb: connections.usb
   };
   sendToRenderer('connection-status', cleanConnections);
+  
+  // Also send gateway statistics
+  sendToRenderer('gateway-stats', gatewayStats);
 }
 
 // IPC Handlers
@@ -350,6 +433,20 @@ ipcMain.handle('get-connection-status', async () => {
 });
 
 ipcMain.handle('clear-log', async () => {
+  return { success: true };
+});
+
+// Gateway Monitoring IPC Handlers
+ipcMain.handle('get-gateway-stats', async () => {
+  return gatewayStats;
+});
+
+ipcMain.handle('reset-gateway-stats', async () => {
+  gatewayStats.messageStats = {
+    ping: 0, handshake: 0, data: 0, triangulation: 0,
+    relay: 0, wifiScan: 0, optimization: 0, unknown: 0,
+    total: 0, delivered: 0
+  };
   return { success: true };
 });
 

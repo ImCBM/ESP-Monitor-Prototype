@@ -1,0 +1,515 @@
+/* ESP Gateway Monitor Styles */
+:root {
+    --primary-color: #007acc;
+    --secondary-color: #28a745;
+    --accent-color: #ffc107;
+    --danger-color: #dc3545;
+    --dark-bg: #1e1e1e;
+    --card-bg: #252525;
+    --text-primary: #ffffff;
+    --text-secondary: #cccccc;
+    --border-color: #444444;
+    --shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    
+    /* Phase Colors */
+    --phase-1-color: #007acc;
+    --phase-2-color: #17a2b8;
+    --phase-3-color: #28a745;
+    --phase-4-color: #ffc107;
+    --phase-5-color: #fd7e14;
+    --phase-6-color: #6f42c1;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--dark-bg);
+    color: var(--text-primary);
+    line-height: 1.6;
+    overflow-x: hidden;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header Styles */
+.header {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+    padding: 30px;
+    border-radius: 15px;
+    margin-bottom: 30px;
+    box-shadow: var(--shadow);
+}
+
+.header h1 {
+    font-size: 2.5em;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.system-status {
+    display: flex;
+    justify-content: center;
+    gap: 40px;
+    flex-wrap: wrap;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.status-item .label {
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.status-indicator {
+    padding: 8px 15px;
+    border-radius: 25px;
+    font-weight: bold;
+    font-size: 0.9em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.status-indicator.online {
+    background: var(--secondary-color);
+    color: white;
+}
+
+.status-indicator.offline {
+    background: var(--danger-color);
+    color: white;
+}
+
+/* Gateway Information Panel */
+.gateway-info {
+    margin-bottom: 30px;
+}
+
+.gateway-info h2 {
+    margin-bottom: 20px;
+    color: var(--primary-color);
+    font-size: 1.8em;
+}
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 20px;
+}
+
+.info-card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 25px;
+    box-shadow: var(--shadow);
+    border-left: 4px solid var(--primary-color);
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.card-header h3 {
+    color: var(--text-primary);
+    font-size: 1.3em;
+}
+
+.card-icon {
+    font-size: 1.5em;
+}
+
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.detail-row:last-child {
+    border-bottom: none;
+}
+
+.detail-row .label {
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.connection-status {
+    padding: 4px 12px;
+    border-radius: 15px;
+    font-size: 0.85em;
+    font-weight: bold;
+}
+
+.connection-status:contains("Connected") {
+    background: var(--secondary-color);
+    color: white;
+}
+
+.connection-status:contains("Disconnected") {
+    background: var(--danger-color);
+    color: white;
+}
+
+/* Phase Statistics */
+.phase-stats {
+    margin-bottom: 30px;
+}
+
+.phase-stats h2 {
+    margin-bottom: 20px;
+    color: var(--primary-color);
+    font-size: 1.8em;
+}
+
+.phase-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+}
+
+.phase-card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: var(--shadow);
+    position: relative;
+    overflow: hidden;
+}
+
+.phase-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+}
+
+.phase-card.phase-1::before { background: var(--phase-1-color); }
+.phase-card.phase-2::before { background: var(--phase-2-color); }
+.phase-card.phase-3::before { background: var(--phase-3-color); }
+.phase-card.phase-4::before { background: var(--phase-4-color); }
+.phase-card.phase-5::before { background: var(--phase-5-color); }
+.phase-card.phase-6::before { background: var(--phase-6-color); }
+
+.phase-card h3 {
+    color: var(--text-primary);
+    font-size: 1.4em;
+    margin-bottom: 5px;
+}
+
+.phase-title {
+    color: var(--text-secondary);
+    font-size: 0.9em;
+    margin-bottom: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.stat-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+}
+
+.stat-label {
+    font-size: 0.9em;
+    color: var(--text-secondary);
+}
+
+.stat-value {
+    font-weight: bold;
+    font-size: 1.2em;
+    color: var(--text-primary);
+}
+
+/* Message Activity */
+.message-activity {
+    margin-bottom: 30px;
+}
+
+.activity-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.activity-header h2 {
+    color: var(--primary-color);
+    font-size: 1.8em;
+}
+
+.activity-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.btn-secondary {
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border: 2px solid var(--border-color);
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: all 0.3s ease;
+}
+
+.btn-secondary:hover {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.activity-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.summary-item {
+    background: var(--card-bg);
+    padding: 15px;
+    border-radius: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.summary-item .label {
+    color: var(--text-secondary);
+    font-size: 0.9em;
+}
+
+.summary-item .value {
+    font-weight: bold;
+    color: var(--text-primary);
+}
+
+.message-log {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 20px;
+    height: 400px;
+    overflow-y: auto;
+    box-shadow: var(--shadow);
+}
+
+.log-placeholder {
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+    padding: 50px;
+}
+
+.log-entry {
+    margin-bottom: 15px;
+    padding: 15px;
+    border-radius: 8px;
+    border-left: 4px solid var(--primary-color);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.log-entry.phase-1 { border-left-color: var(--phase-1-color); }
+.log-entry.phase-2 { border-left-color: var(--phase-2-color); }
+.log-entry.phase-3 { border-left-color: var(--phase-3-color); }
+.log-entry.phase-4 { border-left-color: var(--phase-4-color); }
+.log-entry.phase-5 { border-left-color: var(--phase-5-color); }
+.log-entry.phase-6 { border-left-color: var(--phase-6-color); }
+
+.log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.log-type {
+    font-weight: bold;
+    color: var(--accent-color);
+}
+
+.log-timestamp {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+}
+
+.log-content {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    word-wrap: break-word;
+}
+
+/* Network Topology */
+.network-topology {
+    margin-bottom: 30px;
+}
+
+.network-topology h2 {
+    margin-bottom: 20px;
+    color: var(--primary-color);
+    font-size: 1.8em;
+}
+
+.topology-container {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 25px;
+    box-shadow: var(--shadow);
+}
+
+.topology-legend {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+}
+
+.phase-1-color { background: var(--phase-1-color); }
+.phase-3-color { background: var(--phase-3-color); }
+.phase-4-color { background: var(--phase-4-color); }
+.phase-5-color { background: var(--phase-5-color); }
+
+.topology-canvas {
+    min-height: 300px;
+    border: 2px dashed var(--border-color);
+    border-radius: 8px;
+    position: relative;
+    overflow: hidden;
+}
+
+.topology-placeholder {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+}
+
+.esp-node {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.8em;
+    cursor: pointer;
+    transition: transform 0.3s ease;
+}
+
+.esp-node:hover {
+    transform: scale(1.1);
+}
+
+.esp-node.esp1 {
+    background: linear-gradient(45deg, var(--primary-color), var(--secondary-color));
+    border: 3px solid var(--accent-color);
+}
+
+.esp-node.esp2 {
+    background: var(--phase-1-color);
+}
+
+.connection-line {
+    position: absolute;
+    height: 2px;
+    background: var(--phase-5-color);
+    transform-origin: left center;
+    opacity: 0.7;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 1; }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .container {
+        padding: 15px;
+    }
+    
+    .header h1 {
+        font-size: 2em;
+    }
+    
+    .system-status {
+        flex-direction: column;
+        gap: 15px;
+    }
+    
+    .info-grid,
+    .phase-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .activity-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .activity-controls {
+        justify-content: center;
+    }
+}
+
+/* Scrollbar Styling */
+.message-log::-webkit-scrollbar {
+    width: 8px;
+}
+
+.message-log::-webkit-scrollbar-track {
+    background: var(--dark-bg);
+    border-radius: 4px;
+}
+
+.message-log::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+.message-log::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-color);
+}
