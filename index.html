@@ -42,20 +42,20 @@
           <h3>Connection Status</h3>
           <div class="status-grid">
             <div class="status-mini">
-              <div class="status-indicator" id="wifi-status"></div>
-              <span>WiFi</span>
-            </div>
-            <div class="status-mini">
-              <div class="status-indicator" id="relay-usb-status"></div>
+              <div class="status-indicator" id="usb-status"></div>
               <span>USB</span>
             </div>
             <div class="status-mini">
-              <div class="status-indicator" id="relay-wifi-status"></div>
-              <span>Relay</span>
+              <div class="status-indicator" id="esp1-gateway-status"></div>
+              <span>ESP1</span>
             </div>
             <div class="status-mini">
-              <div class="status-indicator" id="usb-status"></div>
-              <span>Serial</span>
+              <div class="status-indicator" id="esp2-via-gateway-status"></div>
+              <span>ESP2</span>
+            </div>
+            <div class="status-mini">
+              <div class="status-indicator" id="wifi-status"></div>
+              <span>WiFi</span>
             </div>
           </div>
         </div>
@@ -242,9 +242,10 @@
             </label>
             <select id="filter-select">
               <option value="ALL">All</option>
-              <option value="WIFI">WiFi</option>
-              <option value="RELAY">Relay</option>
-              <option value="USB">USB</option>
+              <option value="ESP1">ESP1 Gateway</option>
+              <option value="ESP2">ESP2 Devices</option>
+              <option value="WIFI">WiFi Direct</option>
+              <option value="USB">USB Serial</option>
               <option value="SYSTEM">System</option>
             </select>
           </div>

@@ -27,7 +27,12 @@ class GatewayMonitor {
             macAddress: 'Unknown',
             protocolMismatches: 0,
             lastSender: 'None',
-            lastMessageType: 'None'
+            lastMessageType: 'None',
+            asyncQueueDepth: 0,
+            asyncQueueCapacity: 0,
+            coreUtilization: 'Unknown',
+            taskInfo: 'Unknown',
+            gatewayMode: 'Unknown'
         };
 
         this.connections = {
@@ -243,6 +248,22 @@ class GatewayMonitor {
         document.getElementById('espnow-status').textContent = this.gatewayInfo.espNowStatus;
         document.getElementById('esp-mac').textContent = this.gatewayInfo.macAddress;
         document.getElementById('protocol-mismatches').textContent = this.gatewayInfo.protocolMismatches;
+        
+        // Update async status if available
+        if (this.gatewayInfo.gatewayMode === 'POWERED_ASYNC') {
+            const gatewayStatus = document.getElementById('gateway-status');
+            if (gatewayStatus) {
+                gatewayStatus.textContent = 'Online (Async)';
+                gatewayStatus.className = 'status-indicator online';
+                gatewayStatus.title = `${this.gatewayInfo.coreUtilization} - ${this.gatewayInfo.taskInfo}`;
+            }
+            
+            // Add async queue info if elements exist
+            const asyncInfo = document.getElementById('async-queue-info');
+            if (asyncInfo) {
+                asyncInfo.textContent = `Queue: ${this.gatewayInfo.asyncQueueDepth}/${this.gatewayInfo.asyncQueueCapacity}`;
+            }
+        }
     }
 
     updateStatisticsDisplay() {

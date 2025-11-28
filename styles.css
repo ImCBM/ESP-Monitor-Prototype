@@ -1048,6 +1048,52 @@ select {
   background-color: rgba(220, 53, 69, 0.1);
 }
 
+.log-entry.esp1_gateway {
+  border-left: 3px solid #28a745;
+  background-color: rgba(40, 167, 69, 0.1);
+}
+
+.log-entry.esp1_gateway_async {
+  border-left: 3px solid #20c997;
+  background-color: rgba(32, 201, 151, 0.1);
+  position: relative;
+}
+
+.log-entry.esp1_gateway_async::after {
+  content: "⚡";
+  position: absolute;
+  top: 5px;
+  right: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.log-entry.esp1_debug {
+  border-left: 3px solid #17a2b8;
+  background-color: rgba(23, 162, 184, 0.1);
+}
+
+.log-entry.esp1_debug_async {
+  border-left: 3px solid #6f42c1;
+  background-color: rgba(111, 66, 193, 0.1);
+  position: relative;
+}
+
+.log-entry.esp1_debug_async::after {
+  content: "🔄";
+  position: absolute;
+  top: 5px;
+  right: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.log-entry.esp2_via_gateway {
+  border-left: 3px solid #fd7e14;
+  background-color: rgba(253, 126, 20, 0.1);
+  font-weight: 500;
+}
+
 .log-entry.espnow-relay {
   border-left: 3px solid #4682b4;
   background-color: rgba(70, 130, 180, 0.1);

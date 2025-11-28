@@ -9,10 +9,10 @@ const autoScrollCheck = document.getElementById('auto-scroll');
 const filterSelect = document.getElementById('filter-select');
 const resetStatsBtn = document.getElementById('reset-stats');
 
-// Status indicators
+// Status indicators - Updated for ESP1 Gateway Architecture
 const wifiStatus = document.getElementById('wifi-status');
-const relayUsbStatus = document.getElementById('relay-usb-status');
-const relayWifiStatus = document.getElementById('relay-wifi-status');
+const esp1GatewayStatus = document.getElementById('esp1-gateway-status');
+const esp2ViaGatewayStatus = document.getElementById('esp2-via-gateway-status');
 const usbStatus = document.getElementById('usb-status');
 
 // Dashboard elements
@@ -343,7 +343,23 @@ function addLogEntry(message, source = 'SYSTEM', isESPNowRelay = false, data = n
 
 function shouldShowLogEntry(source) {
   if (logFilter === 'ALL') return true;
-  return source.toUpperCase().includes(logFilter);
+  
+  // Map filter categories to source types
+  const sourceType = source.toUpperCase();
+  switch (logFilter) {
+    case 'ESP1':
+      return sourceType.includes('ESP1') || sourceType.includes('GATEWAY');
+    case 'ESP2':
+      return sourceType.includes('ESP2');
+    case 'WIFI':
+      return sourceType.includes('WIFI');
+    case 'USB':
+      return sourceType.includes('USB');
+    case 'SYSTEM':
+      return sourceType.includes('SYSTEM');
+    default:
+      return sourceType.includes(logFilter);
+  }
 }
 
 function filterLogEntries() {
@@ -355,14 +371,16 @@ function filterLogEntries() {
 }
 
 function updateConnectionStatus(status) {
-  // Update status indicators
+  console.log('Updating connection status:', status);
+  
+  // Update status indicators for new architecture
   updateStatusIndicator(wifiStatus, status.wifi?.connected);
-  updateStatusIndicator(relayUsbStatus, status.relayUsb?.connected);
-  updateStatusIndicator(relayWifiStatus, status.relayWifi?.connected);
+  updateStatusIndicator(esp1GatewayStatus, status.esp1Gateway?.connected);
+  updateStatusIndicator(esp2ViaGatewayStatus, status.esp2ViaGateway?.connected);
   updateStatusIndicator(usbStatus, status.usb?.connected);
   
-  // Update connection state
-  isConnected = status.usb?.connected || false;
+  // Update connection state (ESP1 gateway is primary connection)
+  isConnected = status.usb?.connected && status.esp1Gateway?.connected;
   
   // Update UI based on connection state
   if (isConnected) {
@@ -371,6 +389,11 @@ function updateConnectionStatus(status) {
   } else {
     connectBtn.style.display = 'inline-block';
     disconnectBtn.style.display = 'none';
+  }
+  
+  // Update dashboard elements with ESP2 device count
+  if (status.esp2ViaGateway?.deviceCount) {
+    esp2CountElement.textContent = status.esp2ViaGateway.deviceCount;
   }
 }
 
