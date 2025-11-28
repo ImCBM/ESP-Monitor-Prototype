@@ -332,36 +332,60 @@ function formatESP1GatewayMessage(data) {
   const messageCount = data.message_count || 0;
   const rssi = data.esp2_rssi || 0;
   
-  // Format main gateway info
-  let formatted = `<div class="esp1-gateway-message">`;
-  formatted += `<div class="gateway-header"><strong>ESP1 Gateway:</strong> ${esp2Type.toUpperCase()} from ${esp2Device}</div>`;
-  
-  // ESP2 message details
   if (data.esp2_raw_data) {
+    // This is an ESP2 message via ESP1 Gateway - format vertically
     try {
       const esp2Data = JSON.parse(data.esp2_raw_data);
-      formatted += `<div class="esp2-details">`;
-      formatted += `<span class="phase-badge ${esp2Phase.replace(' ', '').toLowerCase()}">${esp2Phase}</span>`;
-      formatted += `<span class="rssi-info">RSSI: ${rssi} dBm</span>`;
-      formatted += `<span class="msg-count">Msg #${messageCount}</span>`;
-      formatted += `</div>`;
       
-      // Format ESP2 payload
-      formatted += formatESP2PayloadSummary(esp2Data);
+      let formatted = `ESP1 Gateway: ${esp2Type.toUpperCase()} from ${esp2Device}\n`;
+      formatted += `${esp2Phase}\n`;
+      formatted += `RSSI: ${rssi} dBm\n`;
+      formatted += `Msg #${messageCount}\n`;
+      formatted += `\n`;
+      
+      // Extract key information from ESP2 data
+      if (esp2Data.source_device) {
+        formatted += `MAC: ${esp2Data.source_device.mac_address || 'Unknown'}\n`;
+        formatted += `Type: ${esp2Data.source_device.device_type || 'Unknown'}\n`;
+      }
+      
+      // Show sensor data if available
+      if (esp2Data.payload?.sensor_data) {
+        const sensor = esp2Data.payload.sensor_data;
+        if (sensor.temperature !== undefined) {
+          formatted += `Temperature: ${sensor.temperature}°C\n`;
+        }
+        if (sensor.humidity !== undefined) {
+          formatted += `Humidity: ${sensor.humidity}%\n`;
+        }
+        if (sensor.system_data?.free_heap) {
+          formatted += `Free Heap: ${sensor.system_data.free_heap}\n`;
+        }
+      }
+      
+      // Show ping data if available
+      if (esp2Data.payload && esp2Data.message_type === 'ping') {
+        if (esp2Data.payload.free_heap) {
+          formatted += `Free Heap: ${esp2Data.payload.free_heap}\n`;
+        }
+        if (esp2Data.payload.peer_count !== undefined) {
+          formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
+        }
+      }
+      
+      return `<pre class="clean-message">${formatted}</pre>`;
     } catch (e) {
-      formatted += `<div class="esp2-raw">${data.esp2_raw_data}</div>`;
+      return `ESP1 Gateway: ${esp2Type.toUpperCase()} from ${esp2Device}\nRaw data: ${data.esp2_raw_data}`;
     }
   } else {
-    // Gateway status message
-    formatted += `<div class="gateway-status">`;
-    formatted += `<span class="status-item">Uptime: ${data.uptime}s</span>`;
-    formatted += `<span class="status-item">Total: ${data.message_stats?.total || 0}</span>`;
-    formatted += `<span class="status-item">Last: ${data.gateway_health?.last_message_type || 'none'}</span>`;
-    formatted += `</div>`;
+    // Gateway status message only
+    let formatted = `ESP1 Gateway: STATUS from Unknown\n`;
+    formatted += `Uptime: ${data.uptime}s\n`;
+    formatted += `Total: ${data.message_stats?.total || 0}\n`;
+    formatted += `Last: ${data.gateway_health?.last_message_type || 'none'}\n`;
+    
+    return `<pre class="clean-message">${formatted}</pre>`;
   }
-  
-  formatted += `</div>`;
-  return formatted;
 }
 
 function formatESP2Message(data) {
@@ -369,67 +393,21 @@ function formatESP2Message(data) {
   const deviceId = data.source_device?.device_id || data.device_id || 'Unknown';
   const version = data.version || 'Unknown';
   
-  let formatted = `<div class="esp2-message">`;
-  formatted += `<div class="esp2-header"><strong>ESP2 ${messageType.toUpperCase()}:</strong> from ${deviceId}</div>`;
-  formatted += `<div class="esp2-info">`;
-  formatted += `<span class="version-info">v${version}</span>`;
-  formatted += `<span class="timestamp-info">Time: ${data.timestamp || 'Unknown'}</span>`;
-  formatted += `</div>`;
+  let formatted = `ESP2 ${messageType.toUpperCase()}: from ${deviceId}\n`;
+  formatted += `Version: ${version}    `;
+  formatted += `Time: ${data.timestamp || 'Unknown'}\n`;
   
-  // Add phase-specific details
-  formatted += formatESP2PayloadSummary(data);
-  formatted += `</div>`;
-  return formatted;
-}
-
-function formatESP2PayloadSummary(data) {
-  let summary = `<div class="esp2-payload">`;
-  
-  // Core device info
-  if (data.source_device) {
-    summary += `<div class="device-info">`;
-    summary += `<span class="device-detail">MAC: ${data.source_device.mac_address || 'Unknown'}</span>`;
-    summary += `<span class="device-detail">Type: ${data.source_device.device_type || 'Unknown'}</span>`;
-    summary += `</div>`;
+  // Add basic payload info
+  if (data.payload) {
+    if (data.payload.free_heap) {
+      formatted += `Free Heap: ${data.payload.free_heap}    `;
+    }
+    if (data.payload.peer_count !== undefined) {
+      formatted += `Peers: ${data.payload.peer_count}`;
+    }
   }
   
-  // Sensor data
-  if (data.sensor_data) {
-    summary += `<div class="sensor-data">`;
-    if (data.sensor_data.temperature !== undefined) {
-      summary += `<span class="sensor-value">🌡️ ${data.sensor_data.temperature}°C</span>`;
-    }
-    if (data.sensor_data.humidity !== undefined) {
-      summary += `<span class="sensor-value">💧 ${data.sensor_data.humidity}%</span>`;
-    }
-    if (data.sensor_data.system_data) {
-      summary += `<span class="sensor-value">🔋 ${data.sensor_data.system_data.free_heap || 'N/A'}</span>`;
-    }
-    summary += `</div>`;
-  }
-  
-  // Network info for specific message types
-  if (data.message_type === 'ping' && data.payload) {
-    summary += `<div class="ping-data">`;
-    summary += `<span class="ping-detail">Free Heap: ${data.payload.free_heap || 'Unknown'}</span>`;
-    summary += `<span class="ping-detail">Peers: ${data.payload.peer_count || 0}</span>`;
-    summary += `</div>`;
-  }
-  
-  // Handshake details
-  if (data.message_type === 'handshake' && data.payload) {
-    summary += `<div class="handshake-data">`;
-    if (data.payload.capabilities) {
-      const caps = data.payload.capabilities;
-      summary += `<span class="capability">📡 ${caps.wifi_scanning ? '✓' : '✗'} WiFi</span>`;
-      summary += `<span class="capability">📍 ${caps.positioning ? '✓' : '✗'} GPS</span>`;
-      summary += `<span class="capability">🔄 ${caps.message_relaying ? '✓' : '✗'} Relay</span>`;
-    }
-    summary += `</div>`;
-  }
-  
-  summary += `</div>`;
-  return summary;
+  return `<pre class="clean-message">${formatted}</pre>`;
 }
 
 function addLogEntry(message, source = 'SYSTEM', isESPNowRelay = false, data = null) {

@@ -254,7 +254,7 @@ function openSerialPort(portPath) {
         source === 'ESP1_GATEWAY'
       );
       
-      // ESP2 Message Detection (direct from ESP2 or relayed)
+      // ESP2 Message Detection (direct from ESP2 or relayed) - but NOT if it's embedded in ESP1 Gateway
       const isESP2Message = isValidJSON && (
         parsedData.message_type ||
         parsedData.version ||
@@ -269,7 +269,7 @@ function openSerialPort(portPath) {
         gatewayStats.esp1Connected = true;
         processESP1GatewayMessage(parsedData);
         
-        // If this gateway message contains ESP2 data, also process it
+        // If this gateway message contains ESP2 data, process it but don't create separate log entry
         if (parsedData.esp2_raw_data) {
           try {
             const esp2Data = JSON.parse(parsedData.esp2_raw_data);
@@ -282,8 +282,8 @@ function openSerialPort(portPath) {
         console.log(`ESP1 Gateway: ${parsedData.esp2_message_type || 'Status'} from ${parsedData.esp2_sender_device || 'Unknown ESP2'}`);
       }
       
-      // Process ESP2 Messages (Phase 1-6)
-      if (isESPNowRelay) {
+      // Process ESP2 Messages (Phase 1-6) - ONLY if not already processed via ESP1 Gateway
+      if (isESPNowRelay && !isESP1Gateway) {
         source = 'RELAY_USB';
         connections.relayUsb.connected = true;
         processESP2Message(parsedData);
@@ -300,8 +300,19 @@ function openSerialPort(portPath) {
         }, 10000);
       }
       
-      // Only send to renderer if it's a meaningful message
-      if (isValidJSON && (isESP1Gateway || isESP2Message)) {
+      // Send to renderer - ESP1 Gateway messages take priority, standalone ESP2 only if no gateway
+      if (isValidJSON && isESP1Gateway) {
+        // Always send ESP1 Gateway messages (they may contain ESP2 data)
+        sendToRenderer('log', {
+          message: message,
+          source: source,
+          mode: mode,
+          isESPNowRelay: isESPNowRelay,
+          timestamp: new Date().toISOString(),
+          data: parsedData
+        });
+      } else if (isValidJSON && isESP2Message && !isESP1Gateway) {
+        // Send standalone ESP2 messages only if they're not from gateway
         sendToRenderer('log', {
           message: message,
           source: source,
