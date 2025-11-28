@@ -222,50 +222,64 @@ function openSerialPort(portPath) {
   serialParser.on('data', (data) => {
     try {
       const message = data.trim();
+      if (!message) return;
+      
       let parsedData;
+      let isValidJSON = false;
       
       try {
         parsedData = JSON.parse(message);
+        isValidJSON = true;
       } catch (e) {
+        // Handle non-JSON messages (like status lines)
         parsedData = { raw: message };
       }
 
-      // Debug logging for relay detection (only when ESP-NOW detected)
-      if (message.includes('sender_mac') || parsedData.sender_mac) {
-        console.log('Processing potential relay message:', {
-          message: message.substring(0, 100) + '...',
-          hasSenderMac: !!parsedData.sender_mac,
-          hasReceivedData: !!parsedData.received_data,
-          hasRelayedData: !!parsedData.relayed_data,
-          hasESPNowInMessage: parsedData.message && parsedData.message.includes('ESP-NOW'),
-          hasJSONRelay: message.includes('sender_mac') && message.includes('received_data'),
-          source: parsedData.source
-        });
+      // Skip processing decorative lines and status messages
+      if (message.includes('═══') || message.includes('🔄') || message.includes('📡') || 
+          message.includes('✅') || message.startsWith('Phase:') || message.startsWith('From ESP2:') ||
+          message.startsWith('Message Type:') || message.startsWith('Sender Device:') ||
+          message.startsWith('Total Messages:') || message.startsWith('Gateway Status:')) {
+        return; // Skip these fragmented display messages
       }
 
       // Detect ESP1 Gateway vs ESP2 messages
       let source = parsedData.source || 'USB';
       const mode = parsedData.mode || '';
       
-      // ESP1 Gateway Detection
-      const isESP1Gateway = message.includes('ESP1_WIRED_GATEWAY') || 
-                           message.includes('gateway_type') ||
-                           parsedData.device_id === 'ESP1_WIRED_GATEWAY';
+      // ESP1 Gateway Detection (prioritize consolidated messages)
+      const isESP1Gateway = isValidJSON && (
+        parsedData.gateway_type === 'ESP1_WIRED_GATEWAY' ||
+        parsedData.device_id === 'ESP1_WIRED_GATEWAY' ||
+        source === 'ESP1_GATEWAY'
+      );
       
-      // ESP2 Message Detection (Phase 1-6)
-      const isESP2Message = message.includes('ESP2_SENSOR') || 
-                           message.includes('device_id') ||
-                           parsedData.message_type ||
-                           parsedData.version;
+      // ESP2 Message Detection (direct from ESP2 or relayed)
+      const isESP2Message = isValidJSON && (
+        parsedData.message_type ||
+        parsedData.version ||
+        parsedData.source_device
+      ) && !isESP1Gateway;
       
-      const isESPNowRelay = isESP2Message && !isESP1Gateway;
+      const isESPNowRelay = isESP2Message;
       
       // Process ESP1 Gateway Status Messages
       if (isESP1Gateway) {
         source = 'ESP1_GATEWAY';
         gatewayStats.esp1Connected = true;
         processESP1GatewayMessage(parsedData);
-        console.log('ESP1 Gateway status received:', parsedData.device_id || 'Status Update');
+        
+        // If this gateway message contains ESP2 data, also process it
+        if (parsedData.esp2_raw_data) {
+          try {
+            const esp2Data = JSON.parse(parsedData.esp2_raw_data);
+            processESP2Message(esp2Data);
+          } catch (e) {
+            console.log('Could not parse embedded ESP2 data:', e.message);
+          }
+        }
+        
+        console.log(`ESP1 Gateway: ${parsedData.esp2_message_type || 'Status'} from ${parsedData.esp2_sender_device || 'Unknown ESP2'}`);
       }
       
       // Process ESP2 Messages (Phase 1-6)
@@ -273,7 +287,7 @@ function openSerialPort(portPath) {
         source = 'RELAY_USB';
         connections.relayUsb.connected = true;
         processESP2Message(parsedData);
-        console.log(`ESP2 ${parsedData.message_type || 'message'} from ${parsedData.source_device?.device_id || 'unknown'} (Phase ${getESP2Phase(parsedData)})}`);
+        console.log(`ESP2 ${parsedData.message_type || 'message'} from ${parsedData.source_device?.device_id || 'unknown'} (Phase ${getESP2Phase(parsedData)})`);
         
         // Clear any existing timeout
         if (connections.relayUsb.timeout) {
@@ -286,14 +300,17 @@ function openSerialPort(portPath) {
         }, 10000);
       }
       
-      sendToRenderer('log', {
-        message: message,
-        source: source,
-        mode: mode,
-        isESPNowRelay: isESPNowRelay,
-        timestamp: new Date().toISOString(),
-        data: parsedData
-      });
+      // Only send to renderer if it's a meaningful message
+      if (isValidJSON && (isESP1Gateway || isESP2Message)) {
+        sendToRenderer('log', {
+          message: message,
+          source: source,
+          mode: mode,
+          isESPNowRelay: isESPNowRelay,
+          timestamp: new Date().toISOString(),
+          data: parsedData
+        });
+      }
     } catch (error) {
       console.error('Error processing serial data:', error);
     }
@@ -347,6 +364,17 @@ function processESP1GatewayMessage(parsedData) {
   }
   if (parsedData.uptime) {
     gatewayStats.gatewayInfo.uptime = parsedData.uptime;
+  }
+  
+  // Update gateway health info from consolidated message
+  if (parsedData.esp2_sender_device) {
+    gatewayStats.gatewayInfo.lastSender = parsedData.esp2_sender_device;
+  }
+  if (parsedData.esp2_message_type) {
+    gatewayStats.gatewayInfo.lastMessageType = parsedData.esp2_message_type;
+  }
+  if (parsedData.message_count) {
+    gatewayStats.messageStats.total = parsedData.message_count;
   }
   
   // Update message statistics from gateway

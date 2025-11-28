@@ -78,18 +78,8 @@ struct GatewayStatus {
   String lastError = "none";
 };
 
-// Message structure for async processing
-struct AsyncMessage {
-  String data;
-  String senderMAC;
-  int rssi;
-  unsigned long timestamp;
-  bool hasMessage = false;
-};
-
 MessageStats messageStats;
 GatewayStatus gatewayStatus;
-AsyncMessage asyncMsg;
 String lastMessageType = "none";
 String lastSenderDevice = "none";
 int protocolMismatches = 0;
@@ -99,6 +89,17 @@ int protocolMismatches = 0;
 int receiveMessageCount = 0;
 unsigned long lastStatusSend = 0;
 const unsigned long STATUS_INTERVAL = 5000;  // 5 seconds
+
+// Message structure for async processing
+struct AsyncMessage {
+  String data;
+  String senderMAC;
+  int rssi;
+  unsigned long timestamp;
+  bool hasMessage = false;
+};
+
+AsyncMessage asyncMsg;
 
 // ============ MESSAGE PERSISTENCE VARIABLES ============
 Preferences preferences;
@@ -319,7 +320,7 @@ void persistMessage(const String& message) {
   Serial.printf("💾 Message persisted to flash (slot %d)\n", currentCount);
 }
 
-// ============ MESSAGE ANALYSIS ============
+// ============ PHASE 5 MESSAGE ANALYSIS ============
 
 void analyzeESP2Message(const String& messageData, const String& senderMAC) {
   // Parse JSON to extract message type and sender info
@@ -330,44 +331,34 @@ void analyzeESP2Message(const String& messageData, const String& senderMAC) {
     lastMessageType = "invalid_json";
     lastSenderDevice = "unknown";
     messageStats.unknownMessages++;
-    gatewayStatus.lastError = "JSON parse error: " + String(error.c_str());
     return;
   }
   
-  // Check protocol version (Phase 6: Enhanced compatibility)
+  // Check protocol version
   if (doc.containsKey("version")) {
     String protocolVersion = doc["version"].as<String>();
-    float version = protocolVersion.toFloat();
-    float minVersion = String(MIN_ESP2_PROTOCOL).toFloat();
-    float maxVersion = String(MAX_ESP2_PROTOCOL).toFloat();
-    
-    if (version < minVersion || version > maxVersion) {
+    if (protocolVersion != SUPPORTED_ESP2_PROTOCOL) {
       protocolMismatches++;
-      Serial.printf("⚠️ Protocol version %s outside supported range %s-%s\n", 
-                   protocolVersion.c_str(), MIN_ESP2_PROTOCOL, MAX_ESP2_PROTOCOL);
-      gatewayStatus.lastError = "Protocol version mismatch: " + protocolVersion;
+      Serial.printf("⚠️ Protocol mismatch: received %s, expected %s\n", 
+                   protocolVersion.c_str(), SUPPORTED_ESP2_PROTOCOL);
     }
   }
   
-  // Extract and categorize message type (All Phases)
+  // Extract message type
   if (doc.containsKey("message_type")) {
     lastMessageType = doc["message_type"].as<String>();
     
-    // Phase-specific message type statistics
+    // Update message type statistics
     if (lastMessageType == "ping") {
-      messageStats.pingMessages++;  // Phase 1
+      messageStats.pingMessages++;
     } else if (lastMessageType == "handshake") {
-      messageStats.handshakeMessages++;  // Phase 3
+      messageStats.handshakeMessages++;
     } else if (lastMessageType == "data") {
-      messageStats.dataMessages++;  // Phase 1
+      messageStats.dataMessages++;
     } else if (lastMessageType == "triangulation") {
-      messageStats.triangulationMessages++;  // Phase 4
+      messageStats.triangulationMessages++;
     } else if (lastMessageType == "relay") {
-      messageStats.relayMessages++;  // Phase 5
-    } else if (lastMessageType == "wifi_scan") {
-      messageStats.wifiScanMessages++;  // Phase 2
-    } else if (lastMessageType == "optimization") {
-      messageStats.optimizationMessages++;  // Phase 6
+      messageStats.relayMessages++;
     } else {
       messageStats.unknownMessages++;
     }
@@ -376,20 +367,17 @@ void analyzeESP2Message(const String& messageData, const String& senderMAC) {
     messageStats.unknownMessages++;
   }
   
-  // Extract sender device ID with fallbacks
+  // Extract sender device ID
   if (doc.containsKey("source_device") && doc["source_device"].containsKey("device_id")) {
     lastSenderDevice = doc["source_device"]["device_id"].as<String>();
-  } else if (doc.containsKey("device_id")) {
-    lastSenderDevice = doc["device_id"].as<String>();  // Fallback
   } else {
-    lastSenderDevice = senderMAC;  // Ultimate fallback to MAC address
+    lastSenderDevice = senderMAC;  // Fallback to MAC address
   }
   
   messageStats.totalMessages = receiveMessageCount;
-  gatewayStatus.lastError = "none";  // Clear error on successful parse
 }
 
-// ============ PERSISTENCE FUNCTIONS ============
+// ============ PHASE 6 PERSISTENCE FUNCTIONS ============
 
 void loadPersistedMessages() {
   Serial.println("🔄 Loading persisted messages from flash...");
@@ -399,7 +387,83 @@ void loadPersistedMessages() {
     Serial.printf("📦 Found %d persisted messages\n", persistedCount);
     messageStats.persistedMessages = persistedCount;
     
-    // For wired gateway, deliver persisted messages immediately via USB
+    // Add persisted messages to queue for delivery
+    for (int i = 0; i < persistedCount && i < MAX_PERSISTED_MESSAGES; i++) {
+      String key = "msg_" + String(i);
+      String persistedMsg = preferences.getString(key.c_str(), "");
+      if (persistedMsg.length() > 0) {
+        messageQueue.push(persistedMsg);
+        Serial.printf("📤 Queued persisted message %d\n", i);
+      }
+    }
+    
+    // Clear persisted messages after loading
+    for (int i = 0; i < persistedCount; i++) {
+      String key = "msg_" + String(i);
+      preferences.remove(key.c_str());
+    }
+    preferences.putInt("msg_count", 0);
+    Serial.println("✅ Persisted messages loaded and cleared from flash");
+  } else {
+    Serial.println("📭 No persisted messages found");
+  }
+}
+
+void persistMessage(const String& message) {
+  if (!gatewayStatus.persistenceEnabled) return;
+  
+  int currentCount = preferences.getInt("msg_count", 0);
+  if (currentCount >= MAX_PERSISTED_MESSAGES) {
+    Serial.println("⚠️ Persistence storage full - dropping oldest message");
+    // Shift messages down to make room
+    for (int i = 0; i < MAX_PERSISTED_MESSAGES - 1; i++) {
+      String sourceKey = "msg_" + String(i + 1);
+      String targetKey = "msg_" + String(i);
+      String msg = preferences.getString(sourceKey.c_str(), "");
+      preferences.putString(targetKey.c_str(), msg);
+    }
+    currentCount = MAX_PERSISTED_MESSAGES - 1;
+  }
+  
+  String key = "msg_" + String(currentCount);
+  preferences.putString(key.c_str(), message);
+  preferences.putInt("msg_count", currentCount + 1);
+  messageStats.persistedMessages++;
+  
+  Serial.printf("💾 Message persisted to flash (slot %d)\n", currentCount);
+}
+
+void processPersistentMessages() {
+  // Process queued messages if monitor is available
+  if (wsConnected && !messageQueue.empty()) {
+    int processedCount = 0;
+    while (!messageQueue.empty() && processedCount < 5) {  // Process max 5 per cycle
+      String queuedMessage = messageQueue.front();
+      messageQueue.pop();
+      
+      bool sent = wsClient.send(queuedMessage);
+      if (sent) {
+        messageStats.deliveredMessages++;
+        processedCount++;
+        Serial.printf("📤 Delivered queued message (%d remaining)\n", messageQueue.size());
+      } else {
+        // Re-queue if send failed
+        messageQueue.push(queuedMessage);
+        Serial.println("❌ Failed to send queued message - re-queued");
+        break;
+      }
+    }
+  }
+}
+
+void loadPersistedMessages() {
+  Serial.println("🔄 Checking for persisted messages...");
+  
+  int persistedCount = preferences.getInt("msg_count", 0);
+  if (persistedCount > 0) {
+    Serial.printf("📫 Found %d persisted messages (delivered via USB)\n", persistedCount);
+    
+    // For wired gateway, just deliver persisted messages immediately via USB
     for (int i = 0; i < persistedCount && i < MAX_PERSISTED_MESSAGES; i++) {
       String key = "msg_" + String(i);
       String persistedMsg = preferences.getString(key.c_str(), "");
@@ -416,9 +480,9 @@ void loadPersistedMessages() {
       preferences.remove(key.c_str());
     }
     preferences.putInt("msg_count", 0);
-    Serial.println("✅ Persisted messages loaded and delivered via USB");
+    Serial.println("✅ All persisted messages delivered and cleared");
   } else {
-    Serial.println("📭 No persisted messages found");
+    Serial.println("📫 No persisted messages found");
   }
 }
 
