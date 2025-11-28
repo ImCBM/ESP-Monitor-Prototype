@@ -1,44 +1,30 @@
 /*
- * ESP2 Universal - Peer-to-Peer Communication Firmware (Phase 1-5)
+ * ESP2 Universal - Complete ESP2 Communication Firmware
  * 
- * This is the universal ESP2 firmware that enables:
+ * This is the complete universal ESP2 firmware that enables:
  * - Structured JSON envelope messaging between ESP2s
- * - ESP-NOW peer-to-peer communication
+ * - ESP-NOW peer-to-peer communication (ESP1 Gateway compatible)
  * - WiFi scanning and mode switching
  * - Advanced peer discovery and handshake protocol
  * - RSSI-based triangulation and relative positioning
  * - Message relaying and store-and-forward capability
  * 
- * Phase 1 Features:
+ * Complete Feature Set:
  * - Standardized envelope structure for all messages
- * - Peer discovery via broadcast ping
- * - Handshake response protocol
- * - Message validation using shared key
- * - Loop prevention for handshake messages
- * 
- * Phase 2 Features:
- * - Periodic WiFi network scanning
- * - Server reachability checks
- * - Dynamic mode switching (ESP-NOW/WiFi)
- * - Known network list management
- * 
- * Phase 3 Features:
- * - Enhanced peer validation and security
- * - Improved handshake protocol
- * - Peer capability negotiation
- * - Advanced loop prevention
- * 
- * Phase 4 Features:
- * - RSSI-based distance estimation
- * - Relative positioning calculation (N/S/E/W)
- * - Periodic triangulation updates
- * - Position-aware peer tracking
- * 
- * Phase 5 Features:
- * - Message storage and relay management
- * - Store-and-forward messaging through peer network
- * - Multi-hop message delivery with loop prevention
- * - Delivery confirmation and relay chain tracking
+ * - Peer discovery via broadcast ping with ESP1 gateway compatibility
+ * - Enhanced handshake response protocol with security validation
+ * - Message validation using shared key authentication
+ * - Advanced loop prevention for handshake messages
+ * - Periodic WiFi network scanning and server reachability checks
+ * - Dynamic mode switching between ESP-NOW and WiFi
+ * - Known network list management and connection prioritization
+ * - Enhanced peer validation and security protocols
+ * - Improved handshake protocol with capability negotiation
+ * - RSSI-based distance estimation and relative positioning (N/S/E/W)
+ * - Periodic triangulation updates and position-aware peer tracking
+ * - Message storage and relay management with store-and-forward capability
+ * - Multi-hop message delivery with loop prevention and delivery confirmation
+ * - Complete relay chain tracking and server delivery
  * 
  * Hardware: Any ESP32 board
  * 
@@ -48,6 +34,7 @@
  *    - ArduinoJson (by Benoit Blanchon) - via Library Manager
  * 2. Configure device settings below
  * 3. Upload to ESP32
+ * 4. Power it on and monitor serial output
  * 4. Power it on and monitor serial output
  */
 
@@ -99,10 +86,11 @@ struct WiFiCredential {
 };
 
 WiFiCredential knownNetworks[] = {
-  {"YourHomeWiFi", "your_password", false},
-  {"YourHotspot", "hotspot_password", false},
-  {"OfficeWiFi", "office_password", false},
-  {"OpenNetwork", "", true},
+  // Disabled for ESP1 Gateway Mode - Prioritize ESP-NOW
+  // {"YourHomeWiFi", "your_password", false},
+  // {"YourHotspot", "hotspot_password", false}, 
+  // {"OfficeWiFi", "office_password", false},
+  // {"OpenNetwork", "", true},
   {"", "", false} // End marker
 };
 
@@ -197,17 +185,23 @@ struct StoredMessage {
 // ============================================================================
 //                      TIMING & OPERATIONAL VARIABLES
 // ============================================================================
-// Core communication timing
+// Core communication timing - Optimized for ESP1 Gateway
 unsigned long lastPeerDiscovery = 0;
-const unsigned long PEER_DISCOVERY_INTERVAL = 10000;  // Send ping every 10 seconds
+const unsigned long PEER_DISCOVERY_INTERVAL = 5000;   // Send ping every 5 seconds (faster for gateway)
 unsigned long lastDataSend = 0;
-const unsigned long DATA_SEND_INTERVAL = 30000;       // Send data every 30 seconds
+const unsigned long DATA_SEND_INTERVAL = 10000;       // Send data every 10 seconds (faster for gateway)
 
-// Phase 2: WiFi Scanning and Mode Switching
+// Radio Management (WiFi and ESP-NOW share the same radio)
+bool espNowActive = false;
+bool wifiModeActive = false;
+unsigned long lastRadioSwitch = 0;
+const unsigned long RADIO_SWITCH_DELAY = 100;  // Minimum delay between radio switches
+
+// Phase 2: WiFi Scanning and Mode Switching (Reduced for ESP1 Gateway Mode)
 unsigned long lastWiFiScan = 0;
-const unsigned long WIFI_SCAN_INTERVAL = 60000;       // Scan WiFi every 60 seconds
+const unsigned long WIFI_SCAN_INTERVAL = 300000;      // Scan WiFi every 5 minutes (reduced)
 unsigned long lastServerCheck = 0;
-const unsigned long SERVER_CHECK_INTERVAL = 120000;   // Check server every 2 minutes
+const unsigned long SERVER_CHECK_INTERVAL = 300000;   // Check server every 5 minutes (reduced)
 unsigned long lastModeSwitch = 0;
 const unsigned long MODE_SWITCH_COOLDOWN = 10000;     // Wait 10s between mode switches
 
@@ -306,13 +300,13 @@ void sendPeerDiscoveryPing();
 void sendHandshakeResponse(const String& replyToMessageId, const uint8_t* peerMac);
 void sendDataMessage();
 void onESPNowReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len);
-void onESPNowSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 bool validateEnvelope(JsonDocument& doc);
 String generateMessageId(const String& messageType);
 void processIncomingMessage(JsonDocument& doc, const uint8_t* senderMac, int rssi);
 void addOrUpdatePeer(const String& deviceId, const String& owner, const String& macAddr, int rssi);
 void printKnownPeers();
 String macToString(const uint8_t* mac);
+void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
 
 
 // WiFi and network management (Phase 2)
@@ -328,7 +322,7 @@ int32_t getChannelFromSSID(const String& ssid);
 bool validatePeerCredentials(JsonDocument& doc);
 void sendEnhancedHandshake(const String& replyToMessageId, const uint8_t* peerMac, JsonDocument& originalPing);
 bool isPeerTrusted(const String& deviceId);
-void updatePeerCapabilities(const String& deviceId, JsonDocument& payload);
+void updatePeerCapabilities(const String& deviceId, JsonObject& payload);
 void cleanupFailedHandshakes();
 
 // Triangulation and positioning (Phase 4)
@@ -366,7 +360,7 @@ void setup() {
   delay(1000);
   
   Serial.println("\n=================================");
-  Serial.println("ESP2 Universal Firmware - Phase 1-3");
+  Serial.println("ESP2 Universal - Complete Firmware");
   Serial.println("=================================");
   Serial.printf("Device ID: %s\n", DEVICE_ID);
   Serial.printf("Owner: %s\n", DEVICE_OWNER);
@@ -382,45 +376,45 @@ void setup() {
   storedMessageCount = 0;
   messageIdCounter = 0;
   
-  // Set WiFi mode and configure ESP-NOW
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  // Radio state initialization
+  espNowActive = false;
+  wifiModeActive = false;
+  lastRadioSwitch = 0;
   
   Serial.print("MAC Address: ");
   Serial.println(WiFi.macAddress());
   
-  // Set fixed channel for all ESP2s initially
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
+  // Initialize ESP-NOW with radio management
+  Serial.println("🚀 Starting in ESP-NOW mode (battery optimized)...");
+  enableESPNowMode();  // Use radio management
   
-  // Initialize ESP-NOW
-  initESPNow();
-  
-  Serial.println("Phase 1-5 Features Active:");
+  Serial.println("Complete Feature Set Active:");
   Serial.println("  ✓ JSON Envelope Messaging");
   Serial.println("  ✓ Peer Discovery Protocol");
   Serial.println("  ✓ Enhanced Handshake Validation");
   Serial.println("  ✓ Advanced Loop Prevention");
   Serial.println("  ✓ Message Authentication");
-  Serial.println("  ✓ WiFi Network Scanning");
-  Serial.println("  ✓ Server Reachability Checks");
+  Serial.println("  ✓ WiFi Network Scanning (Reduced)");
+  Serial.println("  ✓ Server Reachability Checks (Reduced)");
   Serial.println("  ✓ Dynamic Mode Switching");
   Serial.println("  ✓ Peer Capability Negotiation");
   Serial.println("  ✓ RSSI-based Distance Estimation");
   Serial.println("  ✓ Relative Positioning (N/S/E/W)");
   Serial.println("  ✓ Triangulation Algorithm");
   Serial.println("  ✓ Message Relaying & Storage");
-  Serial.println("  ✓ Multi-hop Message Delivery\n");
+  Serial.println("  ✓ Multi-hop Message Delivery");
+  Serial.println("  🎯 ESP1 GATEWAY MODE: ESP-NOW PRIORITY\n");
   
-  // Phase 2: Initial WiFi scan
+  // Phase 2: Initial WiFi scan (with radio management)
   Serial.println("Performing initial WiFi scan...");
+  enableWiFiMode();  // Switch to WiFi for scanning
   performWiFiScan();
   updateCommunicationMode();
+  enableESPNowMode();  // Switch to ESP-NOW for normal operation
   
-  Serial.printf("Starting in mode: %s\n\n", 
+  Serial.printf("Starting in mode: %s (ESP1 Gateway Priority)\n\n", 
     currentMode == MODE_ESP_NOW_ONLY ? "ESP-NOW Only" :
-    currentMode == MODE_WIFI_BACKUP ? "WiFi Backup" :
+    currentMode == MODE_WIFI_BACKUP ? "WiFi Backup (ESP-NOW Primary)" :
     currentMode == MODE_WIFI_PRIMARY ? "WiFi Primary" : "WiFi Only");
 }
 
@@ -435,34 +429,41 @@ void loop() {
   // WiFi scanning and server monitoring (Phase 2)
   if (currentTime - lastWiFiScan > WIFI_SCAN_INTERVAL) {
     lastWiFiScan = currentTime;
+    // Disable ESP-NOW before WiFi operations
+    enableWiFiMode();
     performWiFiScan();
     updateCommunicationMode();
+    // Re-enable ESP-NOW after WiFi operations
+    enableESPNowMode();
   }
   
   if (currentMode != MODE_ESP_NOW_ONLY && currentTime - lastServerCheck > SERVER_CHECK_INTERVAL) {
     lastServerCheck = currentTime;
+    enableWiFiMode();  // Make sure WiFi is active for server check
     checkServerReachability();
+    enableESPNowMode();  // Switch back to ESP-NOW
   }
   
   // Send periodic peer discovery ping
   if (currentTime - lastPeerDiscovery > PEER_DISCOVERY_INTERVAL) {
     lastPeerDiscovery = currentTime;
+    ensureESPNowActive();  // Make sure ESP-NOW is active
     sendPeerDiscoveryPing();
   }
-  
+
   // Send periodic data message
   if (currentTime - lastDataSend > DATA_SEND_INTERVAL) {
     lastDataSend = currentTime;
+    ensureESPNowActive();  // Make sure ESP-NOW is active
     sendDataMessage();
-  }
-  
-  // Phase 3: Clean up failed handshakes
+  }  // Phase 3: Clean up failed handshakes
   cleanupFailedHandshakes();
   
   // Phase 4: Perform triangulation and positioning updates
   if (currentTime - lastTriangulation > TRIANGULATION_INTERVAL) {
     lastTriangulation = currentTime;
     if (hasEnoughPeersForTriangulation()) {
+      ensureESPNowActive();  // Make sure ESP-NOW is ready for triangulation
       performTriangulation();
       estimateRelativePositions();
     }
@@ -492,10 +493,6 @@ void loop() {
 void initESPNow() {
   Serial.println("Initializing ESP-NOW...");
   
-<<<<<<< Updated upstream
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ Error initializing ESP-NOW");
-=======
   // Essential: Set WiFi mode to STA before ESP-NOW init (like working legacy code)
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -510,14 +507,14 @@ void initESPNow() {
   esp_err_t result = esp_now_init();
   if (result != ESP_OK) {
     Serial.printf("❌ Error initializing ESP-NOW: %d (%s)\n", result, esp_err_to_name(result));
->>>>>>> Stashed changes
     return;
   }
   Serial.println("✓ ESP-NOW initialized successfully");
   
-  // Register callbacks
+  // Register callbacks (both send and receive like working simple test)
+  esp_now_register_send_cb(onDataSent);
   esp_now_register_recv_cb(onESPNowReceive);
-  esp_now_register_send_cb(onESPNowSent);
+  Serial.println("✓ Send and receive callbacks registered");
   
   // Add broadcast peer for peer discovery
   esp_now_peer_info_t peerInfo = {};
@@ -532,6 +529,7 @@ void initESPNow() {
   }
   
   Serial.println("✓ ESP-NOW initialized successfully");
+  Serial.printf("✓ Broadcasting on channel %d (ESP1 Gateway will receive)\n", ESP_NOW_CHANNEL);
 }
 
 
@@ -540,6 +538,8 @@ void initESPNow() {
 // ============================================================================
 
 void sendPeerDiscoveryPing() {
+  ensureESPNowActive();  // Make sure ESP-NOW is ready
+  
   JsonDocument doc;
   
   // Create envelope structure
@@ -632,10 +632,12 @@ void sendPeerDiscoveryPing() {
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
   
   if (result == ESP_OK) {
-    Serial.println("✓ Enhanced ping broadcast sent\n");
+    Serial.println("✓ Enhanced ping broadcast sent (ESP1 Gateway listening)");
   } else {
-    Serial.printf("❌ Error sending ping: %d\n\n", result);
+    Serial.printf("❌ Error sending broadcast ping: %d\n", result);
   }
+  
+  Serial.println(); // End line for readability
 }
 
 
@@ -651,6 +653,8 @@ void sendHandshakeResponse(const String& replyToMessageId, const uint8_t* peerMa
 
 
 void sendDataMessage() {
+  ensureESPNowActive();  // Make sure ESP-NOW is ready
+  
   // Send enhanced data message with sensor and system information
   // Includes peer status and network health metrics (Phase 2/3)
   JsonDocument doc;
@@ -729,7 +733,7 @@ void sendDataMessage() {
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
   
   if (result == ESP_OK) {
-    Serial.println("✓ Enhanced data broadcast sent\n");
+    Serial.println("✓ Enhanced data broadcast sent (ESP1 Gateway listening)\n");
     
     // Phase 5: Store our own message for relay if needed
     storeMessage(doc, DEVICE_ID, true);
@@ -783,13 +787,6 @@ void onESPNowReceive(const esp_now_recv_info_t *info, const uint8_t *data, int l
   
   // Process the message based on type
   processIncomingMessage(doc, info->src_addr, info->rx_ctrl->rssi);
-}
-
-void onESPNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  // Optional: Log send status if needed for debugging
-  if (status != ESP_NOW_SEND_SUCCESS) {
-    Serial.printf("❌ Send failed to %s\n", macToString(mac_addr).c_str());
-  }
 }
 
 bool validateEnvelope(JsonDocument& doc) {
@@ -865,7 +862,8 @@ void processIncomingMessage(JsonDocument& doc, const uint8_t* senderMac, int rss
   addOrUpdatePeer(senderDeviceId, senderOwner, senderMacStr, rssi);
   
   // Update peer capabilities and status
-  updatePeerCapabilities(senderDeviceId, doc["payload"]);
+  JsonObject payload = doc["payload"].as<JsonObject>();
+  updatePeerCapabilities(senderDeviceId, payload);
   
   // Phase 4: Check for triangulation capability
   if (doc["payload"].containsKey("capabilities")) {
@@ -1055,6 +1053,16 @@ String macToString(const uint8_t* mac) {
   return String(macStr);
 }
 
+// ESP-NOW Send Callback (working signature from simple test)
+void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           tx_info->des_addr[0], tx_info->des_addr[1], tx_info->des_addr[2],
+           tx_info->des_addr[3], tx_info->des_addr[4], tx_info->des_addr[5]);
+  Serial.printf("ESP-NOW Send to %s: %s\n", macStr, 
+                status == ESP_NOW_SEND_SUCCESS ? "✓ SUCCESS" : "❌ FAILED");
+}
+
 
 // ============================================================================
 //                        WIFI & SERVER FUNCTIONS
@@ -1178,18 +1186,20 @@ void checkServerReachability() {
 void updateCommunicationMode() {
   CommMode previousMode = currentMode;
   
+  // ESP1 Gateway Mode: Prioritize ESP-NOW communication
+  // Only use WiFi as backup for server communication if absolutely needed
   if (!wifiConnected) {
     currentMode = MODE_ESP_NOW_ONLY;
-  } else if (serverReachable) {
-    currentMode = MODE_WIFI_PRIMARY;
   } else {
-    currentMode = MODE_WIFI_BACKUP;
+    // Even with WiFi available, prefer ESP-NOW for ESP1 gateway
+    // WiFi is secondary for server communication only
+    currentMode = MODE_WIFI_BACKUP;  // ESP-NOW primary, WiFi secondary
   }
   
   if (currentMode != previousMode && millis() - lastModeSwitch > MODE_SWITCH_COOLDOWN) {
     lastModeSwitch = millis();
     
-    Serial.printf("🔄 Mode change: %s -> %s\n",
+    Serial.printf("🔄 Mode change: %s -> %s (ESP1 Gateway Priority)\n",
       previousMode == MODE_ESP_NOW_ONLY ? "ESP-NOW Only" :
       previousMode == MODE_WIFI_BACKUP ? "WiFi Backup" :
       previousMode == MODE_WIFI_PRIMARY ? "WiFi Primary" : "WiFi Only",
@@ -1198,10 +1208,11 @@ void updateCommunicationMode() {
       currentMode == MODE_WIFI_BACKUP ? "WiFi Backup" :
       currentMode == MODE_WIFI_PRIMARY ? "WiFi Primary" : "WiFi Only");
     
-    if (currentMode == MODE_WIFI_PRIMARY || currentMode == MODE_WIFI_BACKUP) {
-      switchToWiFiMode();
-    } else {
-      switchToESPNowMode();
+    // Always ensure ESP-NOW is active for ESP1 communication
+    switchToESPNowMode();
+    
+    if (currentMode == MODE_WIFI_BACKUP && wifiConnected) {
+      Serial.println("📡 WiFi available as backup for server communication");
     }
   }
 }
@@ -1366,7 +1377,7 @@ bool isPeerTrusted(const String& deviceId) {
   return false;
 }
 
-void updatePeerCapabilities(const String& deviceId, JsonDocument& payload) {
+void updatePeerCapabilities(const String& deviceId, JsonObject& payload) {
   for (int i = 0; i < peerCount; i++) {
     if (knownPeers[i].deviceId == deviceId) {
       knownPeers[i].capabilities.clear();
@@ -1838,7 +1849,7 @@ void storeMessage(JsonDocument& messageDoc, const String& senderId, bool isOwnMe
   int storeIndex = storedMessageCount;
   messageStorage[storeIndex].messageId = messageId;
   messageStorage[storeIndex].originalSender = senderId;
-  messageStorage[storeIndex].senderOwner = messageDoc["source_device"]["owner"];
+  messageStorage[storeIndex].senderOwner = messageDoc["source_device"]["owner"].as<String>();
   messageStorage[storeIndex].messageData = messageDoc;
   messageStorage[storeIndex].timestamp = millis();
   messageStorage[storeIndex].lastRelayAttempt = 0;
@@ -1853,10 +1864,10 @@ void storeMessage(JsonDocument& messageDoc, const String& senderId, bool isOwnMe
     JsonArray relayChain = messageDoc["payload"]["relay_chain"];
     for (JsonVariant hop : relayChain) {
       RelayHop relayHop;
-      relayHop.deviceId = hop["device_id"];
-      relayHop.deviceOwner = hop["device_owner"];
-      relayHop.timestamp = hop["timestamp"];
-      relayHop.rssi = hop["rssi"];
+      relayHop.deviceId = hop["device_id"].as<String>();
+      relayHop.deviceOwner = hop["device_owner"].as<String>();
+      relayHop.timestamp = hop["timestamp"].as<unsigned long>();
+      relayHop.rssi = hop["rssi"].as<int>();
       messageStorage[storeIndex].relayChain.push_back(relayHop);
     }
     messageStorage[storeIndex].hopCount = messageStorage[storeIndex].relayChain.size();
@@ -2183,4 +2194,78 @@ int findStoredMessage(const String& messageId) {
     }
   }
   return -1;
+}
+
+// ============================================================================
+//                         RADIO MANAGEMENT FUNCTIONS
+// ============================================================================
+
+void enableWiFiMode() {
+  if (wifiModeActive) return;  // Already in WiFi mode
+  
+  unsigned long currentTime = millis();
+  if (currentTime - lastRadioSwitch < RADIO_SWITCH_DELAY) {
+    delay(RADIO_SWITCH_DELAY - (currentTime - lastRadioSwitch));
+  }
+  
+  if (espNowActive) {
+    Serial.println("📡 Switching radio: ESP-NOW -> WiFi");
+    esp_now_deinit();
+    espNowActive = false;
+    delay(100);  // Allow ESP-NOW to properly deinitialize
+  }
+  
+  WiFi.mode(WIFI_STA);
+  wifiModeActive = true;
+  lastRadioSwitch = millis();
+  
+  Serial.println("📶 WiFi mode activated");
+}
+
+void enableESPNowMode() {
+  if (espNowActive) return;  // Already in ESP-NOW mode
+  
+  unsigned long currentTime = millis();
+  if (currentTime - lastRadioSwitch < RADIO_SWITCH_DELAY) {
+    delay(RADIO_SWITCH_DELAY - (currentTime - lastRadioSwitch));
+  }
+  
+  if (wifiModeActive) {
+    Serial.println("📡 Switching radio: WiFi -> ESP-NOW");
+    WiFi.disconnect();
+    delay(100);  // Allow WiFi to properly disconnect
+    wifiModeActive = false;
+  }
+  
+  // Always deinitialize ESP-NOW before reinitializing (like legacy code)
+  if (espNowActive) {
+    esp_now_deinit();
+  }
+  
+  // Reinitialize ESP-NOW using the same method as legacy code
+  initESPNow();
+  espNowActive = true;
+  lastRadioSwitch = millis();
+  
+  Serial.println("📡 ESP-NOW mode activated");
+}
+
+void ensureESPNowActive() {
+  if (!espNowActive) {
+    enableESPNowMode();
+  }
+}
+
+void ensureWiFiActive() {
+  if (!wifiModeActive) {
+    enableWiFiMode();
+  }
+}
+
+void deinitESPNow() {
+  if (espNowActive) {
+    esp_now_deinit();
+    espNowActive = false;
+    Serial.println("📡 ESP-NOW deinitialized");
+  }
 }

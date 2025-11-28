@@ -200,10 +200,21 @@ void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *d
   
   receiveMessageCount++;
   
+<<<<<<< Updated upstream
+=======
+  // Copy data (minimal processing in callback)
+  asyncMsg.data.reserve(data_len + 1);  // Reserve memory to prevent reallocation
+  for (int i = 0; i < data_len; i++) {
+    asyncMsg.data += (char)data[i];
+  }
+  
+  // Store sender MAC (fix heap issue)
+>>>>>>> Stashed changes
   char macStr[18];
   snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
            recv_info->src_addr[0], recv_info->src_addr[1], recv_info->src_addr[2],
            recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5]);
+  asyncMsg.senderMAC = String(macStr);  // Safe String assignment
   
   String receivedData = "";
   for (int i = 0; i < data_len; i++) {
