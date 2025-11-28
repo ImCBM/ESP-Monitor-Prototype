@@ -305,6 +305,22 @@ async function clearLog() {
   }
 }
 
+// Helper function to get icon for message type
+function getMessageTypeIcon(messageType) {
+  const icons = {
+    'ping': '🏓',
+    'triangulation': '📍',
+    'distance_measurement': '📏',
+    'handshake': '🤝',
+    'data': '📊',
+    'wifi_scan': '📡',
+    'relay': '🔄',
+    'optimization': '⚡',
+    'status': '📋'
+  };
+  return icons[messageType.toLowerCase()] || '📧';
+}
+
 function formatMessageData(data, source) {
   // Format ESP1 Gateway messages
   if (source === 'ESP1_GATEWAY' || data.gateway_type === 'ESP1_WIRED_GATEWAY') {
@@ -337,10 +353,10 @@ function formatESP1GatewayMessage(data) {
     try {
       const esp2Data = JSON.parse(data.esp2_raw_data);
       
-      let formatted = `ESP1 Gateway: ${esp2Type.toUpperCase()} from ${esp2Device}\n`;
-      formatted += `${esp2Phase}\n`;
-      formatted += `RSSI: ${rssi} dBm\n`;
-      formatted += `Msg #${messageCount}\n`;
+      let formatted = `🔗 ESP1 Gateway: ${esp2Type.toUpperCase()} from ${esp2Device}\n`;
+      formatted += `📡 ${esp2Phase}\n`;
+      formatted += `📶 RSSI: ${rssi} dBm\n`;
+      formatted += `📊 Msg #${messageCount}\n`;
       formatted += `\n`;
       
       // Extract key information from ESP2 data
@@ -371,6 +387,22 @@ function formatESP1GatewayMessage(data) {
         if (esp2Data.payload.peer_count !== undefined) {
           formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
         }
+        if (esp2Data.payload.positioning_ready !== undefined) {
+          formatted += `Distance Meas.: ${esp2Data.payload.positioning_ready ? '✅ Ready' : '❌ Not Ready'}\n`;
+        }
+        if (esp2Data.payload.triangulation_ready !== undefined) {
+          formatted += `Triangulation: ${esp2Data.payload.triangulation_ready ? '✅ Ready (3+ devs)' : '❌ Need 3+ devices'}\n`;
+        }
+        
+        // Show peer status details
+        if (esp2Data.payload.peers_status && esp2Data.payload.peers_status.length > 0) {
+          formatted += `\nPeer Details:\n`;
+          esp2Data.payload.peers_status.forEach(peer => {
+            const handshake = peer.handshake_complete ? '✅' : '❌';
+            const validated = peer.validated ? '✅' : '❌';
+            formatted += `  ${peer.device_id}: H:${handshake} V:${validated} (${peer.rssi}dBm)\n`;
+          });
+        }
       }
       
       return `<pre class="clean-message">${formatted}</pre>`;
@@ -379,10 +411,10 @@ function formatESP1GatewayMessage(data) {
     }
   } else {
     // Gateway status message only
-    let formatted = `ESP1 Gateway: STATUS from Unknown\n`;
-    formatted += `Uptime: ${data.uptime}s\n`;
-    formatted += `Total: ${data.message_stats?.total || 0}\n`;
-    formatted += `Last: ${data.gateway_health?.last_message_type || 'none'}\n`;
+    let formatted = `🔧 ESP1 Gateway: STATUS from Gateway\n`;
+    formatted += `⏱️ Uptime: ${data.uptime}s\n`;
+    formatted += `📈 Total: ${data.message_stats?.total || 0}\n`;
+    formatted += `📄 Last: ${data.gateway_health?.last_message_type || 'none'}\n`;
     
     return `<pre class="clean-message">${formatted}</pre>`;
   }
@@ -393,7 +425,8 @@ function formatESP2Message(data) {
   const deviceId = data.source_device?.device_id || data.device_id || 'Unknown';
   const version = data.version || 'Unknown';
   
-  let formatted = `ESP2 ${messageType.toUpperCase()}: from ${deviceId}\n`;
+  const messageIcon = getMessageTypeIcon(messageType);
+  let formatted = `${messageIcon} ESP2 ${messageType.toUpperCase()}: from ${deviceId}\n`;
   formatted += `Version: ${version}    `;
   formatted += `Time: ${data.timestamp || 'Unknown'}\n`;
   
@@ -412,7 +445,37 @@ function formatESP2Message(data) {
 
 function addLogEntry(message, source = 'SYSTEM', isESPNowRelay = false, data = null) {
   const logEntry = document.createElement('div');
-  logEntry.className = `log-entry ${source.toLowerCase()}`;
+  
+  // Detect message type for color coding
+  let messageTypeClass = '';
+  if (data && typeof data === 'object') {
+    // Direct ESP2 message type
+    if (data.message_type) {
+      messageTypeClass = data.message_type.toLowerCase();
+    }
+    // ESP1 Gateway relayed message type
+    else if (data.esp2_message_type) {
+      messageTypeClass = data.esp2_message_type.toLowerCase();
+    }
+    // Try to parse from esp2_raw_data
+    else if (data.esp2_raw_data) {
+      try {
+        const esp2Data = JSON.parse(data.esp2_raw_data);
+        if (esp2Data.message_type) {
+          messageTypeClass = esp2Data.message_type.toLowerCase();
+        }
+      } catch (e) {
+        // Ignore parsing errors
+      }
+    }
+  }
+  
+  // Combine source and message type classes
+  const classNames = [`log-entry`, source.toLowerCase()];
+  if (messageTypeClass) {
+    classNames.push(messageTypeClass);
+  }
+  logEntry.className = classNames.join(' ');
   
   const timestamp = new Date().toLocaleTimeString();
   

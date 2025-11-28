@@ -569,6 +569,34 @@ body {
 .log-entry.esp1_gateway .log-source { color: #7c3aed; }
 .log-entry.relay_usb .log-source { color: #f59e0b; }
 
+/* Message Type Colors */
+.log-entry.ping .log-source { color: #39d353; }
+.log-entry.ping .clean-message { border-left-color: #39d353; }
+
+.log-entry.triangulation .log-source { color: #ff6b6b; }
+.log-entry.triangulation .clean-message { border-left-color: #ff6b6b; }
+
+.log-entry.distance_measurement .log-source { color: #51cf66; }
+.log-entry.distance_measurement .clean-message { border-left-color: #51cf66; }
+
+.log-entry.handshake .log-source { color: #ffd93d; }
+.log-entry.handshake .clean-message { border-left-color: #ffd93d; }
+
+.log-entry.data .log-source { color: #6bcf7f; }
+.log-entry.data .clean-message { border-left-color: #6bcf7f; }
+
+.log-entry.wifi_scan .log-source { color: #4dabf7; }
+.log-entry.wifi_scan .clean-message { border-left-color: #4dabf7; }
+
+.log-entry.relay .log-source { color: #fd7e14; }
+.log-entry.relay .clean-message { border-left-color: #fd7e14; }
+
+.log-entry.optimization .log-source { color: #e599f7; }
+.log-entry.optimization .clean-message { border-left-color: #e599f7; }
+
+.log-entry.status .log-source { color: #74c0fc; }
+.log-entry.status .clean-message { border-left-color: #74c0fc; }
+
 /* Clean Message Formatting */
 .clean-message {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
