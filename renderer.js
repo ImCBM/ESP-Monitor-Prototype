@@ -400,7 +400,7 @@ function formatESP1GatewayMessage(data) {
           esp2Data.payload.peers_status.forEach(peer => {
             const handshake = peer.handshake_complete ? '✅' : '❌';
             const validated = peer.validated ? '✅' : '❌';
-            formatted += `  ${peer.device_id}: H:${handshake} V:${validated} (${peer.rssi}dBm)\n`;
+            formatted += `  ${peer.device_id}: handshake:${handshake} Validation:${validated} (${peer.rssi}dBm)\n`;
           });
         }
       }

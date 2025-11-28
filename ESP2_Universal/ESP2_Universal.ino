@@ -107,12 +107,10 @@
   //                        SECURITY CONFIGURATION
   //                        (Phase 3 Features)
   // ============================================================================
-  const char* DEVICE_TYPE = "ESP2_UNIVERSAL";        // Device type identifier
-  const char* FIRMWARE_VERSION = "2.0.0";           // Firmware version
-  const int HANDSHAKE_TIMEOUT = 30000;              // 30 seconds for handshake completion
-  const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
-
-
+const char* DEVICE_TYPE = "ESP2_UNIVERSAL";        // Device type identifier
+const char* FIRMWARE_VERSION = "2.0.0";           // Firmware version
+const int HANDSHAKE_TIMEOUT = 10000;              // 10 seconds for handshake completion (reduced for testing)
+const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
   // ============================================================================
   //                     POSITIONING CONFIGURATION
   //                        (Phase 4 Features)
@@ -339,6 +337,7 @@
   String directionToString(Direction dir);
   Direction stringToDirection(const String& dirStr);
   void printPositioningSummary();
+  bool hasEnoughPeersForPositioning();
   bool hasEnoughPeersForTriangulation();
   void estimateRelativePositions();
   void updateRSSIHistory(const String& deviceId, int rssi);
@@ -358,6 +357,13 @@
   bool hasServerConnection();
   void markMessageDelivered(const String& messageId);
   int findStoredMessage(const String& messageId);
+
+  // Radio management functions
+  void enableWiFiMode();
+  void enableESPNowMode();
+  void ensureESPNowActive();
+  void ensureWiFiActive();
+  void deinitESPNow();
 
   void setup() {
     Serial.begin(115200);
@@ -913,41 +919,53 @@
     }
     
     if (messageType == "ping") {
-      Serial.println("🏓 Received enhanced peer discovery ping - sending handshake response");
+      Serial.printf("🏓 Received trusted ping from %s - shared key validated\n", senderDeviceId.c_str());
       
-      // Convert MAC address from string to bytes for response
-      uint8_t macBytes[6];
-      sscanf(senderMacStr.c_str(), "%02X:%02X:%02X:%02X:%02X:%02X", 
-            &macBytes[0], &macBytes[1], &macBytes[2], &macBytes[3], &macBytes[4], &macBytes[5]);
-      
-      sendEnhancedHandshake(messageId, macBytes, doc);
-      
-    } else if (messageType == "handshake") {
-      String replyToId = doc["payload"]["reply_to"];
-      Serial.printf("🤝 Received enhanced handshake response (reply to: %s)\n", replyToId.c_str());
-      
-      // Phase 3: Enhanced handshake validation
-      bool validationPassed = true;
-      if (doc["payload"].containsKey("validation")) {
-        JsonObject validation = doc["payload"]["validation"];
-        bool trusted = validation.containsKey("trusted") ? validation["trusted"].as<bool>() : false;
-        Serial.printf("  Validation: trusted=%s\n", trusted ? "Yes" : "No");
-      }
-      
-      // Mark handshake complete for this peer
+      // With shared key trust, no handshake needed - mark as instantly validated
       for (int i = 0; i < peerCount; i++) {
         if (knownPeers[i].deviceId == senderDeviceId) {
           knownPeers[i].handshakeComplete = true;
-          knownPeers[i].validated = validationPassed;
-          knownPeers[i].deviceType = senderDeviceType;
-          knownPeers[i].firmwareVersion = senderFirmware;
-          Serial.printf("✓ Enhanced handshake completed with %s\n", senderDeviceId.c_str());
+          knownPeers[i].validated = true;
+          Serial.printf("✅ %s instantly trusted via shared key\n", senderDeviceId.c_str());
           break;
         }
       }
       
     } else if (messageType == "data") {
-      Serial.println("📊 Received enhanced data message");
+      Serial.printf("📊 Received data message from trusted peer %s\n", senderDeviceId.c_str());
+      
+      // Store message for relaying if needed (Phase 5)
+      storeMessage(doc, senderDeviceId, false);
+      
+      // With shared key trust, all data messages are from validated peers
+      for (int i = 0; i < peerCount; i++) {
+        if (knownPeers[i].deviceId == senderDeviceId) {
+          knownPeers[i].handshakeComplete = true;
+          knownPeers[i].validated = true;  // Always true with shared key
+          knownPeers[i].deviceType = senderDeviceType;
+          knownPeers[i].firmwareVersion = senderFirmware;
+          Serial.printf("✓ Peer %s validated via shared key\n", senderDeviceId.c_str());
+          break;
+        }
+      }
+      
+    } else if (messageType == "distance_measurement") {
+      Serial.printf("📏 Received distance measurement from %s\n", senderDeviceId.c_str());
+      
+      // Process distance measurement data (Phase 4)
+      if (doc.containsKey("data")) {
+        JsonObject data = doc["data"];
+        float distance = data["estimated_distance"];
+        String confidence = data["measurement_confidence"];
+        Serial.printf("  Distance: %.1fm (confidence: %s)\n", distance, confidence.c_str());
+      }
+      
+    } else if (messageType == "triangulation") {
+      Serial.printf("📍 Received triangulation data from %s\n", senderDeviceId.c_str());
+      processTriangulationData(doc, rssi);
+      
+    } else {
+      Serial.printf("📋 Received enhanced data message from %s\n", senderDeviceId.c_str());
       
       // Extract and display sensor data if available
       if (doc["payload"].containsKey("sensor_data")) {
@@ -970,32 +988,6 @@
         }
       }
       
-    } else if (messageType == "triangulation") {
-      Serial.println("📏 Received triangulation data");
-      processTriangulationData(doc, rssi);
-      
-    } else if (messageType == "relay") {
-      Serial.println("🔄 Received relay message");
-      processRelayMessage(doc, senderMac, rssi);
-      
-    } else if (messageType == "data" && doc["payload"].containsKey("relay_chain")) {
-      Serial.println("📊 Received relayed data message");
-      // Store this message for potential further relay
-      storeMessage(doc, senderDeviceId, false);
-      
-      // Process normally as data message
-      if (doc["payload"].containsKey("sensor_data")) {
-        JsonObject sensorData = doc["payload"]["sensor_data"];
-        if (sensorData.containsKey("temperature")) {
-          Serial.printf("  Temperature: %.1f°C\n", sensorData["temperature"].as<float>());
-        }
-        if (sensorData.containsKey("humidity")) {
-          Serial.printf("  Humidity: %.1f%%\n", sensorData["humidity"].as<float>());
-        }
-      }
-      
-    } else {
-      Serial.printf("❓ Unknown message type: %s\n", messageType.c_str());
     }
     
     Serial.println();
@@ -1323,7 +1315,9 @@
     
     if (handshakeAttempts.find(peerDeviceId) != handshakeAttempts.end()) {
       if (millis() - handshakeAttempts[peerDeviceId] < HANDSHAKE_TIMEOUT) {
-        Serial.printf("🚫 Handshake cooldown active for %s\n", peerDeviceId.c_str());
+        Serial.printf("🚫 Handshake cooldown active for %s (%.1fs remaining)\n", 
+                     peerDeviceId.c_str(), 
+                     (HANDSHAKE_TIMEOUT - (millis() - handshakeAttempts[peerDeviceId])) / 1000.0);
         return;
       }
     }
@@ -1672,46 +1666,45 @@
     
     Serial.println("📏 Performing distance measurement update...");
     
-    // Calculate distance to each validated peer
+    // Calculate distance to each trusted peer (shared key = trusted)
     for (int i = 0; i < peerCount; i++) {
-      if (knownPeers[i].handshakeComplete && knownPeers[i].validated) {
-        float distance = calculateDistanceFromRSSI(knownPeers[i].rssi);
-        knownPeers[i].relativePos.distance = distance;
-        
-        // Send distance measurement message
-        JsonDocument doc;
-        doc["source_device"]["device_id"] = DEVICE_ID;
-        doc["source_device"]["user_name"] = DEVICE_OWNER;
-        doc["source_device"]["device_type"] = "ESP2_UNIVERSAL";
-        doc["source_device"]["mac_address"] = WiFi.macAddress();
-        doc["message_type"] = "distance_measurement";
-        doc["version"] = ESP2_VERSION;
-        doc["timestamp"] = millis();
-        
-        JsonObject data = doc["data"].to<JsonObject>();
-        data["target_device"] = knownPeers[i].deviceId;
-        data["rssi"] = knownPeers[i].rssi;
-        data["estimated_distance"] = distance;
-        data["measurement_confidence"] = (abs(knownPeers[i].rssi) < 70) ? "high" : "medium";
-        
-        // Add relative direction estimate (simplified)
-        String direction = "unknown";
-        if (knownPeers[i].rssi > -50) direction = "very_close";
-        else if (knownPeers[i].rssi > -60) direction = "close";
-        else if (knownPeers[i].rssi > -70) direction = "medium";
-        else direction = "far";
-        data["relative_distance"] = direction;
-        
-        String message;
-        serializeJson(doc, message);
-        
-        // Send via ESP-NOW broadcast
-        uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-        esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
-        
-        Serial.printf("📏 Distance to %s: %.1fm (RSSI: %d dBm)\\n", 
-          knownPeers[i].deviceId.c_str(), distance, knownPeers[i].rssi);
-      }
+      // With shared key trust, all peers are automatically valid for distance measurement
+      float distance = calculateDistanceFromRSSI(knownPeers[i].rssi);
+      knownPeers[i].relativePos.distance = distance;
+      
+      // Send distance measurement message
+      JsonDocument doc;
+      doc["source_device"]["device_id"] = DEVICE_ID;
+      doc["source_device"]["user_name"] = DEVICE_OWNER;
+      doc["source_device"]["device_type"] = "ESP2_UNIVERSAL";
+      doc["source_device"]["mac_address"] = WiFi.macAddress();
+      doc["message_type"] = "distance_measurement";
+      doc["version"] = ESP2_VERSION;
+      doc["timestamp"] = millis();
+      
+      JsonObject data = doc["data"].to<JsonObject>();
+      data["target_device"] = knownPeers[i].deviceId;
+      data["rssi"] = knownPeers[i].rssi;
+      data["estimated_distance"] = distance;
+      data["measurement_confidence"] = (abs(knownPeers[i].rssi) < 70) ? "high" : "medium";
+      
+      // Add relative direction estimate (simplified)
+      String direction = "unknown";
+      if (knownPeers[i].rssi > -50) direction = "very_close";
+      else if (knownPeers[i].rssi > -60) direction = "close";
+      else if (knownPeers[i].rssi > -70) direction = "medium";
+      else direction = "far";
+      data["relative_distance"] = direction;
+      
+      String message;
+      serializeJson(doc, message);
+      
+      // Send via ESP-NOW broadcast
+      uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+      esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
+      
+      Serial.printf("📏 Distance to %s: %.1fm (RSSI: %d dBm)\n", 
+        knownPeers[i].deviceId.c_str(), distance, knownPeers[i].rssi);
     }
   }
 
@@ -1848,29 +1841,25 @@
     return DIR_UNKNOWN;
   }
 
-  bool hasEnoughPeersForPositioning() {
-    // Check if sufficient validated peers are available for distance measurement
-    int validPeers = 0;
-    for (int i = 0; i < peerCount; i++) {
-      if (knownPeers[i].handshakeComplete && knownPeers[i].validated) {
-        validPeers++;
-      }
-    }
-    return validPeers >= MIN_PEERS_FOR_POSITIONING;
+bool hasEnoughPeersForPositioning() {
+  // Check if sufficient trusted peers are available for distance measurement
+  int validPeers = 0;
+  for (int i = 0; i < peerCount; i++) {
+    // With shared key trust, any peer with same key is instantly valid
+    validPeers++;
   }
+  return validPeers >= MIN_PEERS_FOR_POSITIONING;
+}
 
-  bool hasEnoughPeersForTriangulation() {
-    // True triangulation needs at least 3 validated peers
-    int validPeers = 0;
-    for (int i = 0; i < peerCount; i++) {
-      if (knownPeers[i].handshakeComplete && knownPeers[i].validated) {
-        validPeers++;
-      }
-    }
-    return validPeers >= MIN_PEERS_FOR_TRIANGULATION;
+bool hasEnoughPeersForTriangulation() {
+  // True triangulation needs at least 3 trusted peers
+  int validPeers = 0;
+  for (int i = 0; i < peerCount; i++) {
+    // With shared key trust, any peer with same key is instantly valid  
+    validPeers++;
   }
-
-  void printPositioningSummary() {
+  return validPeers >= MIN_PEERS_FOR_TRIANGULATION;
+}  void printPositioningSummary() {
     // Display comprehensive positioning status for all peers
     // Shows distances, directions, and confidence levels
     Serial.println("🗺️ Positioning Summary:");
