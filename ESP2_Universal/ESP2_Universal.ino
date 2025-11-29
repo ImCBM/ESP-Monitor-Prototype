@@ -1672,21 +1672,31 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
       float distance = calculateDistanceFromRSSI(knownPeers[i].rssi);
       knownPeers[i].relativePos.distance = distance;
       
-      // Send distance measurement message
+      // Send distance measurement message with proper envelope
       JsonDocument doc;
-      doc["source_device"]["device_id"] = DEVICE_ID;
-      doc["source_device"]["user_name"] = DEVICE_OWNER;
-      doc["source_device"]["device_type"] = "ESP2_UNIVERSAL";
-      doc["source_device"]["mac_address"] = WiFi.macAddress();
-      doc["message_type"] = "distance_measurement";
-      doc["version"] = ESP2_VERSION;
-      doc["timestamp"] = millis();
       
-      JsonObject data = doc["data"].to<JsonObject>();
-      data["target_device"] = knownPeers[i].deviceId;
-      data["rssi"] = knownPeers[i].rssi;
-      data["estimated_distance"] = distance;
-      data["measurement_confidence"] = (abs(knownPeers[i].rssi) < 70) ? "high" : "medium";
+      // Complete envelope structure (Phase 1-3 requirements)
+      doc["version"] = PROTOCOL_VERSION;
+      doc["message_id"] = generateMessageId("distance_measurement");
+      doc["timestamp"] = millis() / 1000;
+      doc["shared_key"] = SHARED_KEY;
+      
+      // Source device info
+      JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
+      sourceDevice["device_id"] = DEVICE_ID;
+      sourceDevice["owner"] = DEVICE_OWNER;
+      sourceDevice["mac_address"] = WiFi.macAddress();
+      sourceDevice["device_type"] = DEVICE_TYPE;
+      sourceDevice["firmware_version"] = FIRMWARE_VERSION;
+      
+      doc["message_type"] = "distance_measurement";
+      
+      // Payload with distance data
+      JsonObject payload = doc["payload"].to<JsonObject>();
+      payload["target_device"] = knownPeers[i].deviceId;
+      payload["rssi"] = knownPeers[i].rssi;
+      payload["estimated_distance"] = distance;
+      payload["measurement_confidence"] = (abs(knownPeers[i].rssi) < 70) ? "high" : "medium";
       
       // Add relative direction estimate (simplified)
       String direction = "unknown";
@@ -1694,18 +1704,20 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
       else if (knownPeers[i].rssi > -60) direction = "close";
       else if (knownPeers[i].rssi > -70) direction = "medium";
       else direction = "far";
-      data["relative_distance"] = direction;
+      payload["relative_distance"] = direction;
       
       String message;
       serializeJson(doc, message);
       
       // Send via ESP-NOW broadcast
       uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-      esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
+      esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
       
-      Serial.printf("📏 Distance to %s: %.1fm (RSSI: %d dBm)\n", 
-        knownPeers[i].deviceId.c_str(), distance, knownPeers[i].rssi);
+      Serial.printf("📏 Distance to %s: %.1fm (RSSI: %d dBm) - %s\n", 
+        knownPeers[i].deviceId.c_str(), distance, knownPeers[i].rssi,
+        result == ESP_OK ? "✓ Sent" : "❌ Failed");
     }
+  }
   }
 
   // Main Triangulation Processing
