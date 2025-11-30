@@ -2,7 +2,7 @@
   "name": "esp-monitor",
   "version": "1.0.0",
   "description": "ESP32 Monitor with WiFi, ESP-NOW Relay, and USB communication",
-  "main": "main.js",
+  "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev"
