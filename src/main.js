@@ -60,7 +60,7 @@ function createWindow() {
     title: 'ESP32 Monitor'
   });
 
-  mainWindow.loadFile('index.html');
+  mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
 // WebSocket Server for WiFi ESPs

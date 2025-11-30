@@ -612,7 +612,7 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
     payload["triangulation_ready"] = hasEnoughPeersForTriangulation();
     payload["positioning_peers"] = 0;
     
-    // Add debug info for handshake status
+    // Add debug info for handshake status with distance data
     JsonArray peersDebug = payload.createNestedArray("peers_status");
     for (int i = 0; i < peerCount; i++) {
       JsonObject peerInfo = peersDebug.createNestedObject();
@@ -620,6 +620,13 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
       peerInfo["handshake_complete"] = knownPeers[i].handshakeComplete;
       peerInfo["validated"] = knownPeers[i].validated;
       peerInfo["rssi"] = knownPeers[i].rssi;
+      
+      // Add distance and positioning data
+      if (knownPeers[i].relativePos.isValid) {
+        peerInfo["distance"] = knownPeers[i].relativePos.distance;
+        peerInfo["direction"] = directionToString(knownPeers[i].relativePos.direction);
+        peerInfo["confidence"] = knownPeers[i].relativePos.confidence;
+      }
     }
     
     // Count peers with valid positions
@@ -749,6 +756,26 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
     // Phase 5: Message storage status
     payload["stored_message_count"] = storedMessageCount;
     payload["relay_capacity_available"] = (storedMessageCount < MAX_STORED_MESSAGES);
+    
+    // Phase 4: Add nearby peers with distance/positioning data
+    if (peerCount > 0) {
+      JsonArray nearbyPeers = payload.createNestedArray("nearby_peers");
+      for (int i = 0; i < peerCount; i++) {
+        if (knownPeers[i].validated) {
+          JsonObject peer = nearbyPeers.createNestedObject();
+          peer["device_id"] = knownPeers[i].deviceId;
+          peer["owner"] = knownPeers[i].owner;
+          peer["rssi"] = knownPeers[i].rssi;
+          
+          // Add distance and positioning if available
+          if (knownPeers[i].relativePos.isValid) {
+            peer["distance"] = knownPeers[i].relativePos.distance;
+            peer["direction"] = directionToString(knownPeers[i].relativePos.direction);
+            peer["confidence"] = knownPeers[i].relativePos.confidence;
+          }
+        }
+      }
+    }
     
     // Serialize and send
     String message;
@@ -1718,7 +1745,7 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
         result == ESP_OK ? "✓ Sent" : "❌ Failed");
     }
   }
-  }
+  
 
   // Main Triangulation Processing
   void performTriangulation() {
