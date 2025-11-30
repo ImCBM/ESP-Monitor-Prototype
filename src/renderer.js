@@ -305,6 +305,29 @@ async function clearLog() {
   }
 }
 
+// Distance calculation from RSSI
+function calculateDistance(rssi) {
+  // Path loss model: distance = 10^((TxPower - RSSI) / (10 * N))
+  // TxPower: -40 dBm at 1m (calibrated for ESP32/ESP8266)
+  // N: path loss exponent (2.0 for free space, 2.5-4.0 for indoor)
+  const txPower = -40;
+  const pathLossExponent = 2.5; // Indoor environment
+  
+  const distance = Math.pow(10, (txPower - rssi) / (10 * pathLossExponent));
+  return Math.max(0.1, Math.min(100, distance)); // Clamp between 0.1m and 100m
+}
+
+function calculateConfidence(rssi) {
+  // Confidence based on signal strength
+  // Strong signal (-30 to -50) = high confidence
+  // Weak signal (-80 to -100) = low confidence
+  if (rssi >= -50) return 0.95;
+  if (rssi >= -60) return 0.85;
+  if (rssi >= -70) return 0.70;
+  if (rssi >= -80) return 0.50;
+  return 0.30;
+}
+
 // Helper function to get icon for message type
 function getMessageTypeIcon(messageType) {
   const icons = {
@@ -394,13 +417,47 @@ function formatESP1GatewayMessage(data) {
           formatted += `Triangulation: ${esp2Data.payload.triangulation_ready ? '✅ Ready (3+ devs)' : '❌ Need 3+ devices'}\n`;
         }
         
-        // Show peer status details
+        // Show peer status details with DISTANCE calculated from RSSI
         if (esp2Data.payload.peers_status && esp2Data.payload.peers_status.length > 0) {
           formatted += `\nPeer Details:\n`;
           esp2Data.payload.peers_status.forEach(peer => {
             const handshake = peer.handshake_complete ? '✅' : '❌';
             const validated = peer.validated ? '✅' : '❌';
-            formatted += `  ${peer.device_id}: handshake:${handshake} Validation:${validated} (${peer.rssi}dBm)\n`;
+            formatted += `  ${peer.device_id}: handshake:${handshake} Validation:${validated} (${peer.rssi}dBm)`;
+            
+            // Calculate distance from RSSI (monitor does the calculation)
+            if (peer.rssi && peer.rssi < 0) {
+              const distance = calculateDistance(peer.rssi);
+              const confidence = calculateConfidence(peer.rssi);
+              formatted += ` | 📏 ${distance.toFixed(1)}m (conf: ${(confidence * 100).toFixed(0)}%)`;
+            }
+            formatted += `\n`;
+          });
+        }
+      }
+      
+      // Show data message nearby peers with distance
+      if (esp2Data.payload && esp2Data.message_type === 'data') {
+        if (esp2Data.payload.peer_count !== undefined) {
+          formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
+        }
+        if (esp2Data.payload.system_data?.uptime) {
+          formatted += `Uptime: ${esp2Data.payload.system_data.uptime}s\n`;
+        }
+        
+        // Show nearby peers with DISTANCE calculated from RSSI
+        if (esp2Data.payload.nearby_peers && esp2Data.payload.nearby_peers.length > 0) {
+          formatted += `\nNearby Peers:\n`;
+          esp2Data.payload.nearby_peers.forEach(peer => {
+            formatted += `  ${peer.device_id} (${peer.rssi}dBm)`;
+            
+            // Calculate distance from RSSI (monitor does the calculation)
+            if (peer.rssi && peer.rssi < 0) {
+              const distance = calculateDistance(peer.rssi);
+              const confidence = calculateConfidence(peer.rssi);
+              formatted += ` | 📏 ${distance.toFixed(1)}m (conf: ${(confidence * 100).toFixed(0)}%)`;
+            }
+            formatted += `\n`;
           });
         }
       }

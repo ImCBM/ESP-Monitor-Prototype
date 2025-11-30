@@ -308,7 +308,7 @@ void sendPeerDiscoveryPing() {
   payload["triangulation_ready"] = hasEnoughPeersForTriangulation();
   payload["positioning_peers"] = 0;
   
-  // Add peers status
+  // Add debug info for handshake status with distance data
   JsonArray peersDebug = payload.createNestedArray("peers_status");
   for (int i = 0; i < peerCount; i++) {
     JsonObject peerInfo = peersDebug.createNestedObject();
@@ -316,6 +316,13 @@ void sendPeerDiscoveryPing() {
     peerInfo["handshake_complete"] = knownPeers[i].handshakeComplete;
     peerInfo["validated"] = knownPeers[i].validated;
     peerInfo["rssi"] = knownPeers[i].rssi;
+    
+    // Add distance and positioning data
+    if (knownPeers[i].relativePos.isValid) {
+      peerInfo["distance"] = knownPeers[i].relativePos.distance;
+      peerInfo["direction"] = directionToString(knownPeers[i].relativePos.direction);
+      peerInfo["confidence"] = knownPeers[i].relativePos.confidence;
+    }
   }
   
   // Count peers with valid positions
@@ -452,20 +459,22 @@ void sendDataMessage() {
   // Add relay chain (empty for original message)
   JsonArray relayChain = payload["relay_chain"].to<JsonArray>();
   
-  // Add positioning data if available
+  // Phase 4: Add nearby peers with distance/positioning data
   if (peerCount > 0) {
-    JsonArray peers = payload.createNestedArray("nearby_peers");
-    
+    JsonArray nearbyPeers = payload.createNestedArray("nearby_peers");
     for (int i = 0; i < peerCount; i++) {
-      JsonObject peerObj = peers.createNestedObject();
-      peerObj["device_id"] = knownPeers[i].deviceId;
-      peerObj["owner"] = knownPeers[i].owner;
-      peerObj["rssi"] = knownPeers[i].rssi;
-      
-      if (knownPeers[i].relativePos.isValid) {
-        peerObj["distance"] = knownPeers[i].relativePos.distance;
-        peerObj["direction"] = directionToString(knownPeers[i].relativePos.direction);
-        peerObj["confidence"] = knownPeers[i].relativePos.confidence;
+      if (knownPeers[i].validated) {
+        JsonObject peer = nearbyPeers.createNestedObject();
+        peer["device_id"] = knownPeers[i].deviceId;
+        peer["owner"] = knownPeers[i].owner;
+        peer["rssi"] = knownPeers[i].rssi;
+        
+        // Add distance and positioning if available
+        if (knownPeers[i].relativePos.isValid) {
+          peer["distance"] = knownPeers[i].relativePos.distance;
+          peer["direction"] = directionToString(knownPeers[i].relativePos.direction);
+          peer["confidence"] = knownPeers[i].relativePos.confidence;
+        }
       }
     }
   }
