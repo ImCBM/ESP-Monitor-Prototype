@@ -253,6 +253,43 @@ function processDistanceMessage(deviceData, gatewayRssi) {
   };
 }
 
+// Process peer array (pa) from ping/data messages - updates device registry with peer distances
+function processPeerArray(sourceDevice, peerArray) {
+  if (!peerArray || peerArray.length === 0) return [];
+  
+  const processedPeers = [];
+  
+  peerArray.forEach(peer => {
+    const peerId = peer.d;
+    const peerRssi = peer.r;
+    
+    if (peerId && peerRssi !== undefined) {
+      const distData = addDistanceMeasurement(sourceDevice, peerId, peerRssi);
+      
+      const peerInfo = {
+        deviceId: peerId,
+        rssi: peerRssi,
+        distance: distData ? distData.distance : calculateDistanceFromRSSI(peerRssi),
+        confidence: distData ? distData.confidence : calculateConfidence(peerRssi)
+      };
+      
+      processedPeers.push(peerInfo);
+      
+      // Update device registry's peer info
+      if (esp2DeviceRegistry[sourceDevice]) {
+        esp2DeviceRegistry[sourceDevice].peers[peerId] = {
+          rssi: peerRssi,
+          distance: peerInfo.distance,
+          confidence: peerInfo.confidence,
+          lastSeen: Date.now()
+        };
+      }
+    }
+  });
+  
+  return processedPeers;
+}
+
 // Get all device distances for UI display
 function getAllDeviceDistances() {
   const distances = {};
@@ -742,6 +779,10 @@ function processESP2Message(parsedData, gatewayRssi = null) {
       if (gatewayRssi) {
         processedData.distanceToGateway = calculateDistanceFromRSSI(gatewayRssi);
       }
+      // Process peer array if present (pa contains RSSI to other ESP2 devices)
+      if (parsedData.pa && parsedData.pa.length > 0) {
+        processedData.peerDistances = processPeerArray(deviceId, parsedData.pa);
+      }
       break;
       
     case 1: // data
@@ -751,6 +792,10 @@ function processESP2Message(parsedData, gatewayRssi = null) {
       processedData.peers = parsedData.n;
       if (gatewayRssi) {
         processedData.distanceToGateway = calculateDistanceFromRSSI(gatewayRssi);
+      }
+      // Process peer array if present
+      if (parsedData.pa && parsedData.pa.length > 0) {
+        processedData.peerDistances = processPeerArray(deviceId, parsedData.pa);
       }
       break;
       

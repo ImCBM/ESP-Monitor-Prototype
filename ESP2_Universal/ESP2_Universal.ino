@@ -596,6 +596,16 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
     doc["u"] = millis() / 1000;
     doc["n"] = peerCount;
     
+    // Add peer array with RSSI for distance calculation by Monitor
+    if (peerCount > 0) {
+      JsonArray pa = doc.createNestedArray("pa");
+      for (int i = 0; i < peerCount && i < 5; i++) {  // Max 5 peers to keep message small
+        JsonObject p = pa.createNestedObject();
+        p["d"] = knownPeers[i].deviceId;             // peer device ID
+        p["r"] = knownPeers[i].rssi;                 // peer RSSI (raw)
+      }
+    }
+    
     esp_err_t result = broadcastMsg(doc, "📡 Ping");
     Serial.println(result == ESP_OK ? "✓" : "❌");
   }

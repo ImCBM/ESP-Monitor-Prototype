@@ -301,6 +301,16 @@ void sendPeerDiscoveryPing() {
   doc["u"] = millis() / 1000;                    // uptime
   doc["n"] = peerCount;                          // peer_count
   
+  // Add peer array with RSSI for distance calculation by Monitor
+  if (peerCount > 0) {
+    JsonArray pa = doc.createNestedArray("pa");
+    for (int i = 0; i < peerCount && i < 5; i++) {  // Max 5 peers to keep message small
+      JsonObject p = pa.createNestedObject();
+      p["d"] = knownPeers[i].deviceId;             // peer device ID
+      p["r"] = knownPeers[i].rssi;                 // peer RSSI (raw)
+    }
+  }
+  
   broadcastMsg(doc, "Ping");
 }
 
@@ -340,9 +350,8 @@ void sendDataMessage() {
 // ============================================================================
 
 void onESPNowReceive(uint8_t *mac, uint8_t *data, uint8_t len) {
-  // Get RSSI (ESP8266 doesn't provide RSSI in callback, estimate from WiFi)
-  int rssi = WiFi.RSSI();
-  if (rssi >= 0) rssi = -60; // Default if unavailable
+  // ESP8266 limitation: ESP-NOW callback doesn't provide packet RSSI
+  // Workaround: Look in sender's peer array (pa) to find RSSI they measured for US
   
   char buffer[len + 1];
   memcpy(buffer, data, len);
@@ -359,6 +368,28 @@ void onESPNowReceive(uint8_t *mac, uint8_t *data, uint8_t len) {
   if (!validateEnvelope(doc)) {
     Serial.println("❌ Invalid envelope");
     return;
+  }
+  
+  // Try to find OUR RSSI in sender's peer array (pa)
+  // This is the RSSI that the sender measured when receiving from us
+  int rssi = -60;  // Default
+  
+  JsonArray pa = doc["pa"];
+  if (!pa.isNull()) {
+    for (JsonObject peer : pa) {
+      String peerId = peer["d"] | "";
+      if (peerId == DEVICE_ID) {
+        // Found ourselves in their peer list - use their measured RSSI for us
+        rssi = peer["r"] | -60;
+        Serial.printf("📶 Found our RSSI in sender's pa: %d dBm\n", rssi);
+        break;
+      }
+    }
+  }
+  
+  // Fallback: use the message's general 'r' field if we weren't in peer array
+  if (rssi == -60 && doc.containsKey("r")) {
+    rssi = doc["r"] | -60;
   }
   
   processIncomingMessage(doc, mac, rssi);

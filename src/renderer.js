@@ -452,33 +452,29 @@ function formatESP1GatewayMessage(data) {
           }
         }
         
-        // Nearby Peers section
+        // Nearby Peers section - show from message's peer array (pa)
         const peerCount = esp2Data.n || 0;
-        const knownPeers = deviceReg?.peers || {};
-        const peerEntries = Object.entries(knownPeers);
+        const peerArray = esp2Data.pa || [];  // Peer array from ping/triangulation messages
         
         formatted += `📡 Nearby Peers: ${peerCount}\n`;
         
-        if (peerEntries.length > 0) {
-          peerEntries.forEach(([peerId, peerData]) => {
-            const peerConf = peerData.rssi ? calculateConfidence(peerData.rssi) : 0;
-            const age = Math.round((Date.now() - peerData.lastSeen) / 1000);
-            formatted += `   ${peerId}: ${peerData.distance?.toFixed(2) || '?'}m, ${peerData.rssi || '?'}dBm (${(peerConf * 100).toFixed(0)}% conf)\n`;
-            formatted += `   └─ Last seen: ${age}s ago\n`;
-          });
-        }
-        
-        // Show triangulation peer array data if this is a triangulation message
-        const typeCode = esp2Data.y;
-        if (typeCode === 3 && esp2Data.pa && esp2Data.pa.length > 0) {
-          formatted += `\n📍 Triangulation Peer Data:\n`;
-          esp2Data.pa.forEach((peer, idx) => {
+        // Show peers from the message's peer array (pa) - direct RSSI data
+        if (peerArray.length > 0) {
+          peerArray.forEach((peer) => {
             if (peer.d && peer.r !== undefined) {
               const peerDist = calculateDistance(peer.r);
               const peerConf = calculateConfidence(peer.r);
               formatted += `   ${peer.d}: ${peerDist.toFixed(2)}m, ${peer.r}dBm (${(peerConf * 100).toFixed(0)}% conf)\n`;
             }
           });
+        } else if (peerCount > 0) {
+          formatted += `   (Peer RSSI data pending...)\n`;
+        }
+        
+        // Show triangulation-specific header if this is a triangulation message
+        const typeCode = esp2Data.y;
+        if (typeCode === 3 && peerArray.length > 0) {
+          formatted += `   📍 (Triangulation data)\n`;
         }
         
         // Show distance measurement if this is a distance message
