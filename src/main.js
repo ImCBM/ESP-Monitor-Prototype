@@ -33,6 +33,261 @@ let gatewayStats = {
   }
 };
 
+// ============== ESP2 DEVICE TRACKING & PROCESSING SYSTEM ==============
+// This is where the Monitor does all the heavy lifting that ESPs don't do
+
+// Registry of all known ESP2 devices with their data
+let esp2DeviceRegistry = {};
+
+// Triangulation data storage
+let triangulationData = {
+  referencePoints: [], // Devices with known/fixed positions
+  measurements: [],    // Recent distance measurements for triangulation
+  lastCalculation: null
+};
+
+// Distance measurement history for averaging/smoothing
+let distanceHistory = {};  // { deviceId: { targetId: [measurements] } }
+
+// Configuration for distance calculation
+const distanceConfig = {
+  txPower: -59,           // Calibrated RSSI at 1 meter
+  pathLossExponent: 2.5,  // Indoor environment (2.0=free space, 3.0-4.0=heavy obstructions)
+  historySize: 10,        // Number of measurements to keep for averaging
+  confidenceThreshold: 0.5 // Minimum confidence to use measurement
+};
+
+// Calculate distance from RSSI using Log-Distance Path Loss Model
+function calculateDistanceFromRSSI(rssi) {
+  if (rssi === 0 || rssi === undefined || rssi >= 0) return null;
+  const distance = Math.pow(10, (distanceConfig.txPower - rssi) / (10 * distanceConfig.pathLossExponent));
+  return Math.round(distance * 100) / 100; // Round to 2 decimal places
+}
+
+// Calculate confidence based on signal strength
+function calculateConfidence(rssi) {
+  if (rssi >= -50) return 0.95;  // Excellent signal
+  if (rssi >= -60) return 0.85;  // Good signal
+  if (rssi >= -70) return 0.70;  // Fair signal
+  if (rssi >= -80) return 0.50;  // Weak signal
+  return 0.30;                    // Very weak signal
+}
+
+// Add distance measurement to history and return smoothed average
+function addDistanceMeasurement(fromDevice, toDevice, rssi) {
+  const key = `${fromDevice}->${toDevice}`;
+  
+  if (!distanceHistory[key]) {
+    distanceHistory[key] = [];
+  }
+  
+  const distance = calculateDistanceFromRSSI(rssi);
+  const confidence = calculateConfidence(rssi);
+  
+  if (distance !== null) {
+    distanceHistory[key].push({
+      distance,
+      rssi,
+      confidence,
+      timestamp: Date.now()
+    });
+    
+    // Keep only recent measurements
+    if (distanceHistory[key].length > distanceConfig.historySize) {
+      distanceHistory[key].shift();
+    }
+  }
+  
+  // Calculate weighted average using confidence
+  const measurements = distanceHistory[key];
+  if (measurements.length === 0) return null;
+  
+  let totalWeight = 0;
+  let weightedSum = 0;
+  
+  measurements.forEach(m => {
+    weightedSum += m.distance * m.confidence;
+    totalWeight += m.confidence;
+  });
+  
+  return {
+    distance: Math.round((weightedSum / totalWeight) * 100) / 100,
+    rawDistance: distance,
+    confidence: confidence,
+    sampleCount: measurements.length,
+    rssi: rssi
+  };
+}
+
+// Update or create device in registry
+function updateDeviceRegistry(deviceData, gatewayRssi) {
+  const deviceId = deviceData.d || deviceData.device_id;
+  if (!deviceId) return null;
+  
+  const now = Date.now();
+  
+  if (!esp2DeviceRegistry[deviceId]) {
+    esp2DeviceRegistry[deviceId] = {
+      deviceId: deviceId,
+      owner: deviceData.o || deviceData.owner || 'Unknown',
+      mac: deviceData.m || deviceData.mac_address || 'Unknown',
+      firstSeen: now,
+      lastSeen: now,
+      messageCount: 0,
+      distanceToGateway: null,
+      freeHeap: null,
+      uptime: null,
+      peerCount: 0,
+      peers: {},          // { peerId: { rssi, distance, lastSeen } }
+      lastMessageType: null,
+      protocolVersion: deviceData.v || 'Unknown'
+    };
+  }
+  
+  const device = esp2DeviceRegistry[deviceId];
+  device.lastSeen = now;
+  device.messageCount++;
+  device.protocolVersion = deviceData.v || device.protocolVersion;
+  device.owner = deviceData.o || device.owner;
+  device.mac = deviceData.m || device.mac;
+  
+  // Update distance to gateway from RSSI
+  if (gatewayRssi && gatewayRssi < 0) {
+    const distData = addDistanceMeasurement(deviceId, 'ESP1_GATEWAY', gatewayRssi);
+    if (distData) {
+      device.distanceToGateway = distData;
+    }
+  }
+  
+  // Update device stats based on message type
+  const msgType = deviceData.y;
+  device.lastMessageType = typeCodeToString(msgType);
+  
+  // Extract common fields (compact format)
+  if (deviceData.h !== undefined) device.freeHeap = deviceData.h;
+  if (deviceData.u !== undefined) device.uptime = deviceData.u;
+  if (deviceData.n !== undefined) device.peerCount = deviceData.n;
+  
+  return device;
+}
+
+// Process triangulation data from ESP2 message
+function processTriangulationData(deviceData, gatewayRssi) {
+  const sourceDevice = deviceData.d;
+  const peerArray = deviceData.pa || [];
+  
+  if (peerArray.length === 0) return null;
+  
+  const triangulationEntry = {
+    sourceDevice: sourceDevice,
+    timestamp: Date.now(),
+    gatewayRssi: gatewayRssi,
+    gatewayDistance: calculateDistanceFromRSSI(gatewayRssi),
+    peers: []
+  };
+  
+  // Process each peer in the triangulation data
+  peerArray.forEach(peer => {
+    const peerId = peer.d;
+    const peerRssi = peer.r;
+    
+    if (peerId && peerRssi) {
+      const distData = addDistanceMeasurement(sourceDevice, peerId, peerRssi);
+      
+      triangulationEntry.peers.push({
+        deviceId: peerId,
+        rssi: peerRssi,
+        distance: distData ? distData.distance : calculateDistanceFromRSSI(peerRssi),
+        confidence: distData ? distData.confidence : calculateConfidence(peerRssi)
+      });
+      
+      // Also update the device registry's peer info
+      if (esp2DeviceRegistry[sourceDevice]) {
+        esp2DeviceRegistry[sourceDevice].peers[peerId] = {
+          rssi: peerRssi,
+          distance: distData ? distData.distance : calculateDistanceFromRSSI(peerRssi),
+          lastSeen: Date.now()
+        };
+      }
+    }
+  });
+  
+  // Store for potential position calculation
+  triangulationData.measurements.push(triangulationEntry);
+  
+  // Keep only recent measurements
+  if (triangulationData.measurements.length > 50) {
+    triangulationData.measurements.shift();
+  }
+  
+  return triangulationEntry;
+}
+
+// Process distance measurement message
+function processDistanceMessage(deviceData, gatewayRssi) {
+  const sourceDevice = deviceData.d;
+  const targetDevice = deviceData.to;
+  const rssi = deviceData.r;
+  
+  if (!targetDevice || rssi === undefined) return null;
+  
+  const distData = addDistanceMeasurement(sourceDevice, targetDevice, rssi);
+  
+  // Update peer info in device registry
+  if (esp2DeviceRegistry[sourceDevice] && distData) {
+    esp2DeviceRegistry[sourceDevice].peers[targetDevice] = {
+      rssi: rssi,
+      distance: distData.distance,
+      confidence: distData.confidence,
+      lastSeen: Date.now()
+    };
+  }
+  
+  return {
+    from: sourceDevice,
+    to: targetDevice,
+    rssi: rssi,
+    distance: distData ? distData.distance : calculateDistanceFromRSSI(rssi),
+    confidence: distData ? distData.confidence : calculateConfidence(rssi),
+    smoothed: distData ? distData.sampleCount > 1 : false
+  };
+}
+
+// Get all device distances for UI display
+function getAllDeviceDistances() {
+  const distances = {};
+  
+  Object.values(esp2DeviceRegistry).forEach(device => {
+    distances[device.deviceId] = {
+      toGateway: device.distanceToGateway,
+      toPeers: device.peers,
+      lastSeen: device.lastSeen,
+      online: (Date.now() - device.lastSeen) < 30000 // Consider online if seen in last 30s
+    };
+  });
+  
+  return distances;
+}
+
+// Get triangulation-ready status
+function getTriangulationStatus() {
+  const onlineDevices = Object.values(esp2DeviceRegistry).filter(
+    d => (Date.now() - d.lastSeen) < 30000
+  );
+  
+  return {
+    deviceCount: onlineDevices.length,
+    ready: onlineDevices.length >= 3,
+    devices: onlineDevices.map(d => ({
+      id: d.deviceId,
+      distanceToGateway: d.distanceToGateway?.distance || null,
+      peerCount: Object.keys(d.peers).length
+    })),
+    recentMeasurements: triangulationData.measurements.slice(-10)
+  };
+}
+// ============== END ESP2 DEVICE TRACKING SYSTEM ==============
+
 // Estimate distance from RSSI (in meters)
 // Formula: distance = 10^((TxPower - RSSI) / (10 * N))
 // TxPower: typical ESP32 transmission power at 1m = -59 dBm
@@ -273,7 +528,15 @@ function openSerialPort(portPath) {
         if (parsedData.esp2_raw_data) {
           try {
             const esp2Data = JSON.parse(parsedData.esp2_raw_data);
-            processESP2Message(esp2Data);
+            // Pass gateway RSSI for distance calculation
+            const gatewayRssi = parsedData.esp2_rssi || null;
+            const processedResult = processESP2Message(esp2Data, gatewayRssi);
+            
+            // Attach processed data to parsedData for renderer
+            parsedData._esp2Processed = processedResult;
+            parsedData._deviceRegistry = esp2DeviceRegistry[esp2Data.d];
+            parsedData._allDistances = getAllDeviceDistances();
+            parsedData._triangulationStatus = getTriangulationStatus();
           } catch (e) {
             console.log('Could not parse embedded ESP2 data:', e.message);
           }
@@ -421,12 +684,14 @@ function rssiToDistance(rssi, txPower = -59, pathLossExponent = 2.0) {
   return Math.round(distance * 100) / 100; // Round to 2 decimal places
 }
 
-function processESP2Message(parsedData) {
+function processESP2Message(parsedData, gatewayRssi = null) {
   // Handle both compact (y) and verbose (message_type) formats
   let messageType;
-  if (parsedData.y !== undefined) {
+  let typeCode = parsedData.y;
+  
+  if (typeCode !== undefined) {
     // Compact format: y = type code (0-5)
-    messageType = typeCodeToString(parsedData.y);
+    messageType = typeCodeToString(typeCode);
   } else {
     // Verbose format: message_type = string
     messageType = parsedData.message_type || 'unknown';
@@ -457,11 +722,76 @@ function processESP2Message(parsedData) {
       parseInt(deviceId.replace(/\D/g, '')) || 1);
   }
   
-  // Calculate distance from RSSI if available (for distance messages)
-  if (parsedData.r !== undefined && messageType === 'distance') {
-    const calculatedDistance = rssiToDistance(parsedData.r);
-    parsedData.calculated_distance = calculatedDistance;
+  // ===== COMPREHENSIVE ESP2 MESSAGE PROCESSING =====
+  // Update device registry with all device info
+  const device = updateDeviceRegistry(parsedData, gatewayRssi);
+  
+  // Process based on message type
+  let processedData = {
+    messageType: messageType,
+    deviceId: deviceId,
+    timestamp: Date.now()
+  };
+  
+  switch(typeCode) {
+    case 0: // ping
+      // Basic health check - device info already updated
+      processedData.heap = parsedData.h;
+      processedData.uptime = parsedData.u;
+      processedData.peers = parsedData.n;
+      if (gatewayRssi) {
+        processedData.distanceToGateway = calculateDistanceFromRSSI(gatewayRssi);
+      }
+      break;
+      
+    case 1: // data
+      // System data message
+      processedData.heap = parsedData.h;
+      processedData.uptime = parsedData.u;
+      processedData.peers = parsedData.n;
+      if (gatewayRssi) {
+        processedData.distanceToGateway = calculateDistanceFromRSSI(gatewayRssi);
+      }
+      break;
+      
+    case 2: // handshake
+      processedData.handshakeOk = parsedData.ok;
+      processedData.replyTo = parsedData.re;
+      break;
+      
+    case 3: // triangulation
+      // Process triangulation data with all peer distances
+      const triData = processTriangulationData(parsedData, gatewayRssi);
+      if (triData) {
+        processedData.triangulation = triData;
+        processedData.peerDistances = triData.peers;
+      }
+      break;
+      
+    case 4: // relay
+      processedData.relayId = parsedData.ri;
+      processedData.originSender = parsedData.os;
+      processedData.hopCount = parsedData.hc;
+      processedData.messageData = parsedData.md;
+      processedData.relayCount = parsedData.rc;
+      break;
+      
+    case 5: // distance
+      // Process direct distance measurement between two devices
+      const distResult = processDistanceMessage(parsedData, gatewayRssi);
+      if (distResult) {
+        processedData.distanceMeasurement = distResult;
+      }
+      break;
   }
+  
+  // Attach processed data to the original for UI
+  parsedData._processed = processedData;
+  parsedData._deviceRegistry = esp2DeviceRegistry[deviceId];
+  parsedData._allDistances = getAllDeviceDistances();
+  parsedData._triangulationStatus = getTriangulationStatus();
+  
+  return processedData;
 }
 
 function getESP2Phase(parsedData) {
@@ -539,6 +869,30 @@ ipcMain.handle('reset-gateway-stats', async () => {
     relay: 0, wifiScan: 0, optimization: 0, unknown: 0,
     total: 0, delivered: 0
   };
+  return { success: true };
+});
+
+// ESP2 Device Registry & Distance Tracking IPC Handlers
+ipcMain.handle('get-esp2-devices', async () => {
+  return esp2DeviceRegistry;
+});
+
+ipcMain.handle('get-all-distances', async () => {
+  return getAllDeviceDistances();
+});
+
+ipcMain.handle('get-triangulation-status', async () => {
+  return getTriangulationStatus();
+});
+
+ipcMain.handle('get-distance-history', async () => {
+  return distanceHistory;
+});
+
+ipcMain.handle('clear-device-registry', async () => {
+  esp2DeviceRegistry = {};
+  distanceHistory = {};
+  triangulationData.measurements = [];
   return { success: true };
 });
 

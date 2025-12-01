@@ -328,6 +328,28 @@ function calculateConfidence(rssi) {
   return 0.30;
 }
 
+// Convert compact type code to human-readable name
+function typeCodeToName(typeCode) {
+  const types = {
+    0: 'Ping',
+    1: 'Data',
+    2: 'Handshake',
+    3: 'Triangulation',
+    4: 'Relay',
+    5: 'Distance'
+  };
+  return types[typeCode] || `Unknown(${typeCode})`;
+}
+
+// Format uptime seconds to human-readable string
+function formatUptime(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${mins}m`;
+}
+
 // Helper function to get icon for message type
 function getMessageTypeIcon(messageType) {
   const icons = {
@@ -376,89 +398,240 @@ function formatESP1GatewayMessage(data) {
     try {
       const esp2Data = JSON.parse(data.esp2_raw_data);
       
+      // Check if this is compact format (has 'y' type code) or verbose format
+      const isCompact = esp2Data.y !== undefined;
+      
       let formatted = `🔗 ESP1 Gateway: ${esp2Type.toUpperCase()} from ${esp2Device}\n`;
       formatted += `📡 ${esp2Phase}\n`;
       formatted += `📶 RSSI: ${rssi} dBm\n`;
       formatted += `📊 Msg #${messageCount}\n`;
+      
+      // Calculate distance from gateway RSSI
+      if (rssi && rssi < 0) {
+        const distance = calculateDistance(rssi);
+        const confidence = calculateConfidence(rssi);
+        formatted += `📏 Distance to Gateway: ${distance.toFixed(2)}m (conf: ${(confidence * 100).toFixed(0)}%)\n`;
+      }
+      
       formatted += `\n`;
       
-      // Extract key information from ESP2 data
-      if (esp2Data.source_device) {
-        formatted += `MAC: ${esp2Data.source_device.mac_address || 'Unknown'}\n`;
-        formatted += `Type: ${esp2Data.source_device.device_type || 'Unknown'}\n`;
-      }
-      
-      // Show sensor data if available
-      if (esp2Data.payload?.sensor_data) {
-        const sensor = esp2Data.payload.sensor_data;
-        if (sensor.temperature !== undefined) {
-          formatted += `Temperature: ${sensor.temperature}°C\n`;
-        }
-        if (sensor.humidity !== undefined) {
-          formatted += `Humidity: ${sensor.humidity}%\n`;
-        }
-        if (sensor.system_data?.free_heap) {
-          formatted += `Free Heap: ${sensor.system_data.free_heap}\n`;
-        }
-      }
-      
-      // Show ping data if available
-      if (esp2Data.payload && esp2Data.message_type === 'ping') {
-        if (esp2Data.payload.free_heap) {
-          formatted += `Free Heap: ${esp2Data.payload.free_heap}\n`;
-        }
-        if (esp2Data.payload.peer_count !== undefined) {
-          formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
-        }
-        if (esp2Data.payload.positioning_ready !== undefined) {
-          formatted += `Distance Meas.: ${esp2Data.payload.positioning_ready ? '✅ Ready' : '❌ Not Ready'}\n`;
-        }
-        if (esp2Data.payload.triangulation_ready !== undefined) {
-          formatted += `Triangulation: ${esp2Data.payload.triangulation_ready ? '✅ Ready (3+ devs)' : '❌ Need 3+ devices'}\n`;
+      if (isCompact) {
+        // ===== COMPACT FORMAT DECODING =====
+        // Envelope fields
+        formatted += `═══ ESP2 Device Info ═══\n`;
+        formatted += `🏷️ Device ID: ${esp2Data.d || 'Unknown'}\n`;
+        formatted += `👤 Owner: ${esp2Data.o || 'Unknown'}\n`;
+        formatted += `📱 MAC: ${esp2Data.m || 'Unknown'}\n`;
+        formatted += `📜 Protocol: v${esp2Data.v || '?'}\n`;
+        formatted += `🔑 Message ID: ${esp2Data.i || 'Unknown'}\n`;
+        formatted += `⏱️ Timestamp: ${esp2Data.t || 0}s\n`;
+        formatted += `🌐 Network: ${esp2Data.k || 'Unknown'}\n`;
+        
+        // Type-specific data
+        const typeCode = esp2Data.y;
+        const typeName = typeCodeToName(typeCode);
+        formatted += `\n═══ ${typeName.toUpperCase()} Data ═══\n`;
+        
+        switch(typeCode) {
+          case 0: // ping
+            if (esp2Data.h !== undefined) formatted += `💾 Free Heap: ${esp2Data.h} KB\n`;
+            if (esp2Data.u !== undefined) formatted += `⏱️ Uptime: ${formatUptime(esp2Data.u)}\n`;
+            if (esp2Data.n !== undefined) formatted += `👥 Peers: ${esp2Data.n}\n`;
+            if (esp2Data.r !== undefined) formatted += `📶 Self RSSI: ${esp2Data.r} dBm\n`;
+            break;
+            
+          case 1: // data
+            if (esp2Data.h !== undefined) formatted += `💾 Free Heap: ${esp2Data.h} KB\n`;
+            if (esp2Data.u !== undefined) formatted += `⏱️ Uptime: ${formatUptime(esp2Data.u)}\n`;
+            if (esp2Data.n !== undefined) formatted += `👥 Peers: ${esp2Data.n}\n`;
+            break;
+            
+          case 2: // handshake
+            if (esp2Data.ok !== undefined) formatted += `✅ Handshake OK: ${esp2Data.ok ? 'Yes' : 'No'}\n`;
+            if (esp2Data.re) formatted += `↩️ Reply To: ${esp2Data.re}\n`;
+            break;
+            
+          case 3: // triangulation
+            if (esp2Data.r !== undefined) formatted += `📶 RSSI: ${esp2Data.r} dBm\n`;
+            if (esp2Data.pa && esp2Data.pa.length > 0) {
+              formatted += `\n📍 Peer Array (Triangulation Data):\n`;
+              esp2Data.pa.forEach((peer, idx) => {
+                formatted += `  ${idx + 1}. ${peer.d || 'Unknown'}`;
+                if (peer.r !== undefined) {
+                  const peerDist = calculateDistance(peer.r);
+                  formatted += ` | ${peer.r} dBm | 📏 ${peerDist.toFixed(2)}m`;
+                }
+                formatted += `\n`;
+              });
+            }
+            break;
+            
+          case 4: // relay
+            if (esp2Data.ri) formatted += `🔗 Relay ID: ${esp2Data.ri}\n`;
+            if (esp2Data.os) formatted += `📤 Origin Sender: ${esp2Data.os}\n`;
+            if (esp2Data.hc !== undefined) formatted += `🔢 Hop Count: ${esp2Data.hc}\n`;
+            if (esp2Data.md) formatted += `📦 Message Data: ${esp2Data.md}\n`;
+            if (esp2Data.rc !== undefined) formatted += `📊 Relay Count: ${esp2Data.rc}\n`;
+            break;
+            
+          case 5: // distance
+            if (esp2Data.to) formatted += `🎯 Target: ${esp2Data.to}\n`;
+            if (esp2Data.r !== undefined) {
+              const dist = calculateDistance(esp2Data.r);
+              const conf = calculateConfidence(esp2Data.r);
+              formatted += `📶 RSSI: ${esp2Data.r} dBm\n`;
+              formatted += `📏 Calculated Distance: ${dist.toFixed(2)}m\n`;
+              formatted += `🎯 Confidence: ${(conf * 100).toFixed(0)}%\n`;
+            }
+            break;
+            
+          default:
+            formatted += `❓ Unknown type code: ${typeCode}\n`;
+            formatted += `📦 Raw payload: ${JSON.stringify(esp2Data)}\n`;
         }
         
-        // Show peer status details with DISTANCE calculated from RSSI
-        if (esp2Data.payload.peers_status && esp2Data.payload.peers_status.length > 0) {
-          formatted += `\nPeer Details:\n`;
-          esp2Data.payload.peers_status.forEach(peer => {
-            const handshake = peer.handshake_complete ? '✅' : '❌';
-            const validated = peer.validated ? '✅' : '❌';
-            formatted += `  ${peer.device_id}: handshake:${handshake} Validation:${validated} (${peer.rssi}dBm)`;
-            
-            // Calculate distance from RSSI (monitor does the calculation)
-            if (peer.rssi && peer.rssi < 0) {
-              const distance = calculateDistance(peer.rssi);
-              const confidence = calculateConfidence(peer.rssi);
-              formatted += ` | 📏 ${distance.toFixed(1)}m (conf: ${(confidence * 100).toFixed(0)}%)`;
+        // ===== SHOW PROCESSED TRACKING DATA FROM MONITOR =====
+        // Check if we have processed data attached from main.js
+        if (data._esp2Processed) {
+          const proc = data._esp2Processed;
+          formatted += `\n═══ Monitor Processed Data ═══\n`;
+          
+          // Show distance to gateway (smoothed)
+          if (proc.distanceToGateway !== null && proc.distanceToGateway !== undefined) {
+            formatted += `📏 Distance to Gateway: ${proc.distanceToGateway.toFixed(2)}m\n`;
+          }
+          
+          // Show triangulation data if present
+          if (proc.triangulation) {
+            formatted += `\n📍 Triangulation Results:\n`;
+            formatted += `   Gateway Distance: ${proc.triangulation.gatewayDistance?.toFixed(2) || '?'}m\n`;
+            if (proc.triangulation.peers && proc.triangulation.peers.length > 0) {
+              proc.triangulation.peers.forEach(p => {
+                formatted += `   → ${p.deviceId}: ${p.distance?.toFixed(2) || '?'}m (${(p.confidence * 100).toFixed(0)}% conf)\n`;
+              });
             }
-            formatted += `\n`;
-          });
-        }
-      }
-      
-      // Show data message nearby peers with distance
-      if (esp2Data.payload && esp2Data.message_type === 'data') {
-        if (esp2Data.payload.peer_count !== undefined) {
-          formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
-        }
-        if (esp2Data.payload.system_data?.uptime) {
-          formatted += `Uptime: ${esp2Data.payload.system_data.uptime}s\n`;
+          }
+          
+          // Show distance measurement result
+          if (proc.distanceMeasurement) {
+            const dm = proc.distanceMeasurement;
+            formatted += `\n📏 Distance Measurement:\n`;
+            formatted += `   ${dm.from} → ${dm.to}: ${dm.distance?.toFixed(2) || '?'}m\n`;
+            formatted += `   Confidence: ${(dm.confidence * 100).toFixed(0)}%\n`;
+            if (dm.smoothed) formatted += `   (Smoothed from multiple readings)\n`;
+          }
         }
         
-        // Show nearby peers with DISTANCE calculated from RSSI
-        if (esp2Data.payload.nearby_peers && esp2Data.payload.nearby_peers.length > 0) {
-          formatted += `\nNearby Peers:\n`;
-          esp2Data.payload.nearby_peers.forEach(peer => {
-            formatted += `  ${peer.device_id} (${peer.rssi}dBm)`;
-            
-            // Calculate distance from RSSI (monitor does the calculation)
-            if (peer.rssi && peer.rssi < 0) {
-              const distance = calculateDistance(peer.rssi);
-              const confidence = calculateConfidence(peer.rssi);
-              formatted += ` | 📏 ${distance.toFixed(1)}m (conf: ${(confidence * 100).toFixed(0)}%)`;
-            }
-            formatted += `\n`;
-          });
+        // Show device registry info if available
+        if (data._deviceRegistry) {
+          const dev = data._deviceRegistry;
+          formatted += `\n═══ Device Registry ═══\n`;
+          formatted += `📊 Total Messages: ${dev.messageCount}\n`;
+          if (dev.distanceToGateway) {
+            formatted += `📏 Avg Distance: ${dev.distanceToGateway.distance?.toFixed(2)}m (${dev.distanceToGateway.sampleCount} samples)\n`;
+          }
+          if (Object.keys(dev.peers).length > 0) {
+            formatted += `\n👥 Known Peers:\n`;
+            Object.entries(dev.peers).forEach(([peerId, peerData]) => {
+              const age = Math.round((Date.now() - peerData.lastSeen) / 1000);
+              formatted += `   ${peerId}: ${peerData.distance?.toFixed(2) || '?'}m (${age}s ago)\n`;
+            });
+          }
+        }
+        
+        // Show triangulation status if available
+        if (data._triangulationStatus) {
+          const tri = data._triangulationStatus;
+          formatted += `\n═══ Triangulation Status ═══\n`;
+          formatted += `📡 Online Devices: ${tri.deviceCount}\n`;
+          formatted += `📍 Ready: ${tri.ready ? '✅ Yes (3+ devices)' : '❌ Need more devices'}\n`;
+          if (tri.devices && tri.devices.length > 0) {
+            tri.devices.forEach(d => {
+              formatted += `   ${d.id}: ${d.distanceToGateway?.toFixed(2) || '?'}m to Gateway, sees ${d.peerCount} ESP2 peers\n`;
+            });
+          }
+        }
+        
+      } else {
+        // ===== VERBOSE FORMAT (legacy) =====
+        // Extract key information from ESP2 data
+        if (esp2Data.source_device) {
+          formatted += `MAC: ${esp2Data.source_device.mac_address || 'Unknown'}\n`;
+          formatted += `Type: ${esp2Data.source_device.device_type || 'Unknown'}\n`;
+        }
+        
+        // Show sensor data if available
+        if (esp2Data.payload?.sensor_data) {
+          const sensor = esp2Data.payload.sensor_data;
+          if (sensor.temperature !== undefined) {
+            formatted += `Temperature: ${sensor.temperature}°C\n`;
+          }
+          if (sensor.humidity !== undefined) {
+            formatted += `Humidity: ${sensor.humidity}%\n`;
+          }
+          if (sensor.system_data?.free_heap) {
+            formatted += `Free Heap: ${sensor.system_data.free_heap}\n`;
+          }
+        }
+        
+        // Show ping data if available
+        if (esp2Data.payload && esp2Data.message_type === 'ping') {
+          if (esp2Data.payload.free_heap) {
+            formatted += `Free Heap: ${esp2Data.payload.free_heap}\n`;
+          }
+          if (esp2Data.payload.peer_count !== undefined) {
+            formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
+          }
+          if (esp2Data.payload.positioning_ready !== undefined) {
+            formatted += `Distance Meas.: ${esp2Data.payload.positioning_ready ? '✅ Ready' : '❌ Not Ready'}\n`;
+          }
+          if (esp2Data.payload.triangulation_ready !== undefined) {
+            formatted += `Triangulation: ${esp2Data.payload.triangulation_ready ? '✅ Ready (3+ devs)' : '❌ Need 3+ devices'}\n`;
+          }
+          
+          // Show peer status details with DISTANCE calculated from RSSI
+          if (esp2Data.payload.peers_status && esp2Data.payload.peers_status.length > 0) {
+            formatted += `\nPeer Details:\n`;
+            esp2Data.payload.peers_status.forEach(peer => {
+              const handshake = peer.handshake_complete ? '✅' : '❌';
+              const validated = peer.validated ? '✅' : '❌';
+              formatted += `  ${peer.device_id}: handshake:${handshake} Validation:${validated} (${peer.rssi}dBm)`;
+              
+              // Calculate distance from RSSI (monitor does the calculation)
+              if (peer.rssi && peer.rssi < 0) {
+                const distance = calculateDistance(peer.rssi);
+                const confidence = calculateConfidence(peer.rssi);
+                formatted += ` | 📏 ${distance.toFixed(1)}m (conf: ${(confidence * 100).toFixed(0)}%)`;
+              }
+              formatted += `\n`;
+            });
+          }
+        }
+        
+        // Show data message nearby peers with distance
+        if (esp2Data.payload && esp2Data.message_type === 'data') {
+          if (esp2Data.payload.peer_count !== undefined) {
+            formatted += `Peers: ${esp2Data.payload.peer_count}\n`;
+          }
+          if (esp2Data.payload.system_data?.uptime) {
+            formatted += `Uptime: ${esp2Data.payload.system_data.uptime}s\n`;
+          }
+          
+          // Show nearby peers with DISTANCE calculated from RSSI
+          if (esp2Data.payload.nearby_peers && esp2Data.payload.nearby_peers.length > 0) {
+            formatted += `\nNearby Peers:\n`;
+            esp2Data.payload.nearby_peers.forEach(peer => {
+              formatted += `  ${peer.device_id} (${peer.rssi}dBm)`;
+              
+              // Calculate distance from RSSI (monitor does the calculation)
+              if (peer.rssi && peer.rssi < 0) {
+                const distance = calculateDistance(peer.rssi);
+                const confidence = calculateConfidence(peer.rssi);
+                formatted += ` | 📏 ${distance.toFixed(1)}m (conf: ${(confidence * 100).toFixed(0)}%)`;
+              }
+              formatted += `\n`;
+            });
+          }
         }
       }
       
