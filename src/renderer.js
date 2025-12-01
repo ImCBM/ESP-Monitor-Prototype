@@ -401,23 +401,19 @@ function formatESP1GatewayMessage(data) {
       // Check if this is compact format (has 'y' type code) or verbose format
       const isCompact = esp2Data.y !== undefined;
       
+      // Get device registry info for total message count
+      const deviceReg = data._deviceRegistry;
+      const totalMessages = deviceReg?.messageCount || messageCount;
+      
+      // ===== HEADER =====
       let formatted = `🔗 ESP1 Gateway: ${esp2Type.toUpperCase()} from ${esp2Device}\n`;
-      formatted += `📡 ${esp2Phase}\n`;
       formatted += `📶 RSSI: ${rssi} dBm\n`;
+      formatted += `📊 Total Messages: ${totalMessages}\n`;
       formatted += `📊 Msg #${messageCount}\n`;
-      
-      // Calculate distance from gateway RSSI
-      if (rssi && rssi < 0) {
-        const distance = calculateDistance(rssi);
-        const confidence = calculateConfidence(rssi);
-        formatted += `📏 Distance to Gateway: ${distance.toFixed(2)}m (conf: ${(confidence * 100).toFixed(0)}%)\n`;
-      }
-      
       formatted += `\n`;
       
       if (isCompact) {
-        // ===== COMPACT FORMAT DECODING =====
-        // Envelope fields
+        // ===== ESP2 DEVICE INFO (consolidated) =====
         formatted += `═══ ESP2 Device Info ═══\n`;
         formatted += `🏷️ Device ID: ${esp2Data.d || 'Unknown'}\n`;
         formatted += `👤 Owner: ${esp2Data.o || 'Unknown'}\n`;
@@ -427,129 +423,87 @@ function formatESP1GatewayMessage(data) {
         formatted += `⏱️ Timestamp: ${esp2Data.t || 0}s\n`;
         formatted += `🌐 Network: ${esp2Data.k || 'Unknown'}\n`;
         
-        // Type-specific data
+        // Add system info inline (heap, uptime) - from any message type that has it
+        if (esp2Data.h !== undefined) formatted += `💾 Free Heap: ${esp2Data.h} KB\n`;
+        if (esp2Data.u !== undefined) formatted += `⏱️ Uptime: ${formatUptime(esp2Data.u)}\n`;
+        
+        // ===== DISTANCE / TRIANGULATION STATUS (consolidated) =====
+        formatted += `\n═══ Dist./Triangulation Status ═══\n`;
+        
+        // Calculate readiness
+        const triStatus = data._triangulationStatus;
+        const onlineDevices = triStatus?.deviceCount || 0;
+        const distanceReady = onlineDevices >= 2;
+        const triangleReady = onlineDevices >= 3;
+        
+        formatted += `📍 Distance Ready: ${distanceReady ? '✅ Yes (2+ devices)' : '❌ Need 2+ devices'}\n`;
+        formatted += `📍 Triangle Ready: ${triangleReady ? '✅ Yes (3+ devices)' : '❌ Need 3+ devices'}\n`;
+        
+        // Distance from Gateway (with smoothed average if available)
+        if (rssi && rssi < 0) {
+          const distance = calculateDistance(rssi);
+          const confidence = calculateConfidence(rssi);
+          const avgDist = deviceReg?.distanceToGateway;
+          
+          if (avgDist && avgDist.sampleCount > 1) {
+            formatted += `📏 Distance From Gateway: ${avgDist.distance.toFixed(2)}m avg (${avgDist.sampleCount} samples, ${(confidence * 100).toFixed(0)}% conf)\n`;
+          } else {
+            formatted += `📏 Distance From Gateway: ${distance.toFixed(2)}m (${(confidence * 100).toFixed(0)}% conf)\n`;
+          }
+        }
+        
+        // Nearby Peers section
+        const peerCount = esp2Data.n || 0;
+        const knownPeers = deviceReg?.peers || {};
+        const peerEntries = Object.entries(knownPeers);
+        
+        formatted += `📡 Nearby Peers: ${peerCount}\n`;
+        
+        if (peerEntries.length > 0) {
+          peerEntries.forEach(([peerId, peerData]) => {
+            const peerConf = peerData.rssi ? calculateConfidence(peerData.rssi) : 0;
+            const age = Math.round((Date.now() - peerData.lastSeen) / 1000);
+            formatted += `   ${peerId}: ${peerData.distance?.toFixed(2) || '?'}m, ${peerData.rssi || '?'}dBm (${(peerConf * 100).toFixed(0)}% conf)\n`;
+            formatted += `   └─ Last seen: ${age}s ago\n`;
+          });
+        }
+        
+        // Show triangulation peer array data if this is a triangulation message
         const typeCode = esp2Data.y;
-        const typeName = typeCodeToName(typeCode);
-        formatted += `\n═══ ${typeName.toUpperCase()} Data ═══\n`;
-        
-        switch(typeCode) {
-          case 0: // ping
-            if (esp2Data.h !== undefined) formatted += `💾 Free Heap: ${esp2Data.h} KB\n`;
-            if (esp2Data.u !== undefined) formatted += `⏱️ Uptime: ${formatUptime(esp2Data.u)}\n`;
-            if (esp2Data.n !== undefined) formatted += `👥 Peers: ${esp2Data.n}\n`;
-            if (esp2Data.r !== undefined) formatted += `📶 Self RSSI: ${esp2Data.r} dBm\n`;
-            break;
-            
-          case 1: // data
-            if (esp2Data.h !== undefined) formatted += `💾 Free Heap: ${esp2Data.h} KB\n`;
-            if (esp2Data.u !== undefined) formatted += `⏱️ Uptime: ${formatUptime(esp2Data.u)}\n`;
-            if (esp2Data.n !== undefined) formatted += `👥 Peers: ${esp2Data.n}\n`;
-            break;
-            
-          case 2: // handshake
-            if (esp2Data.ok !== undefined) formatted += `✅ Handshake OK: ${esp2Data.ok ? 'Yes' : 'No'}\n`;
-            if (esp2Data.re) formatted += `↩️ Reply To: ${esp2Data.re}\n`;
-            break;
-            
-          case 3: // triangulation
-            if (esp2Data.r !== undefined) formatted += `📶 RSSI: ${esp2Data.r} dBm\n`;
-            if (esp2Data.pa && esp2Data.pa.length > 0) {
-              formatted += `\n📍 Peer Array (Triangulation Data):\n`;
-              esp2Data.pa.forEach((peer, idx) => {
-                formatted += `  ${idx + 1}. ${peer.d || 'Unknown'}`;
-                if (peer.r !== undefined) {
-                  const peerDist = calculateDistance(peer.r);
-                  formatted += ` | ${peer.r} dBm | 📏 ${peerDist.toFixed(2)}m`;
-                }
-                formatted += `\n`;
-              });
+        if (typeCode === 3 && esp2Data.pa && esp2Data.pa.length > 0) {
+          formatted += `\n📍 Triangulation Peer Data:\n`;
+          esp2Data.pa.forEach((peer, idx) => {
+            if (peer.d && peer.r !== undefined) {
+              const peerDist = calculateDistance(peer.r);
+              const peerConf = calculateConfidence(peer.r);
+              formatted += `   ${peer.d}: ${peerDist.toFixed(2)}m, ${peer.r}dBm (${(peerConf * 100).toFixed(0)}% conf)\n`;
             }
-            break;
-            
-          case 4: // relay
-            if (esp2Data.ri) formatted += `🔗 Relay ID: ${esp2Data.ri}\n`;
-            if (esp2Data.os) formatted += `📤 Origin Sender: ${esp2Data.os}\n`;
-            if (esp2Data.hc !== undefined) formatted += `🔢 Hop Count: ${esp2Data.hc}\n`;
-            if (esp2Data.md) formatted += `📦 Message Data: ${esp2Data.md}\n`;
-            if (esp2Data.rc !== undefined) formatted += `📊 Relay Count: ${esp2Data.rc}\n`;
-            break;
-            
-          case 5: // distance
-            if (esp2Data.to) formatted += `🎯 Target: ${esp2Data.to}\n`;
-            if (esp2Data.r !== undefined) {
-              const dist = calculateDistance(esp2Data.r);
-              const conf = calculateConfidence(esp2Data.r);
-              formatted += `📶 RSSI: ${esp2Data.r} dBm\n`;
-              formatted += `📏 Calculated Distance: ${dist.toFixed(2)}m\n`;
-              formatted += `🎯 Confidence: ${(conf * 100).toFixed(0)}%\n`;
-            }
-            break;
-            
-          default:
-            formatted += `❓ Unknown type code: ${typeCode}\n`;
-            formatted += `📦 Raw payload: ${JSON.stringify(esp2Data)}\n`;
+          });
         }
         
-        // ===== SHOW PROCESSED TRACKING DATA FROM MONITOR =====
-        // Check if we have processed data attached from main.js
-        if (data._esp2Processed) {
-          const proc = data._esp2Processed;
-          formatted += `\n═══ Monitor Processed Data ═══\n`;
-          
-          // Show distance to gateway (smoothed)
-          if (proc.distanceToGateway !== null && proc.distanceToGateway !== undefined) {
-            formatted += `📏 Distance to Gateway: ${proc.distanceToGateway.toFixed(2)}m\n`;
-          }
-          
-          // Show triangulation data if present
-          if (proc.triangulation) {
-            formatted += `\n📍 Triangulation Results:\n`;
-            formatted += `   Gateway Distance: ${proc.triangulation.gatewayDistance?.toFixed(2) || '?'}m\n`;
-            if (proc.triangulation.peers && proc.triangulation.peers.length > 0) {
-              proc.triangulation.peers.forEach(p => {
-                formatted += `   → ${p.deviceId}: ${p.distance?.toFixed(2) || '?'}m (${(p.confidence * 100).toFixed(0)}% conf)\n`;
-              });
-            }
-          }
-          
-          // Show distance measurement result
-          if (proc.distanceMeasurement) {
-            const dm = proc.distanceMeasurement;
-            formatted += `\n📏 Distance Measurement:\n`;
-            formatted += `   ${dm.from} → ${dm.to}: ${dm.distance?.toFixed(2) || '?'}m\n`;
-            formatted += `   Confidence: ${(dm.confidence * 100).toFixed(0)}%\n`;
-            if (dm.smoothed) formatted += `   (Smoothed from multiple readings)\n`;
-          }
+        // Show distance measurement if this is a distance message
+        if (typeCode === 5 && esp2Data.to && esp2Data.r !== undefined) {
+          const dist = calculateDistance(esp2Data.r);
+          const conf = calculateConfidence(esp2Data.r);
+          formatted += `\n📏 Distance Measurement:\n`;
+          formatted += `   🎯 Target: ${esp2Data.to}\n`;
+          formatted += `   📏 Distance: ${dist.toFixed(2)}m, ${esp2Data.r}dBm (${(conf * 100).toFixed(0)}% conf)\n`;
         }
         
-        // Show device registry info if available
-        if (data._deviceRegistry) {
-          const dev = data._deviceRegistry;
-          formatted += `\n═══ Device Registry ═══\n`;
-          formatted += `📊 Total Messages: ${dev.messageCount}\n`;
-          if (dev.distanceToGateway) {
-            formatted += `📏 Avg Distance: ${dev.distanceToGateway.distance?.toFixed(2)}m (${dev.distanceToGateway.sampleCount} samples)\n`;
-          }
-          if (Object.keys(dev.peers).length > 0) {
-            formatted += `\n👥 Known Peers:\n`;
-            Object.entries(dev.peers).forEach(([peerId, peerData]) => {
-              const age = Math.round((Date.now() - peerData.lastSeen) / 1000);
-              formatted += `   ${peerId}: ${peerData.distance?.toFixed(2) || '?'}m (${age}s ago)\n`;
-            });
-          }
+        // Show handshake info if applicable
+        if (typeCode === 2) {
+          formatted += `\n🤝 Handshake:\n`;
+          formatted += `   ✅ Status: ${esp2Data.ok ? 'OK' : 'Failed'}\n`;
+          if (esp2Data.re) formatted += `   ↩️ Reply To: ${esp2Data.re}\n`;
         }
         
-        // Show triangulation status if available
-        if (data._triangulationStatus) {
-          const tri = data._triangulationStatus;
-          formatted += `\n═══ Triangulation Status ═══\n`;
-          formatted += `📡 Online Devices: ${tri.deviceCount}\n`;
-          formatted += `📍 Ready: ${tri.ready ? '✅ Yes (3+ devices)' : '❌ Need more devices'}\n`;
-          if (tri.devices && tri.devices.length > 0) {
-            tri.devices.forEach(d => {
-              formatted += `   ${d.id}: ${d.distanceToGateway?.toFixed(2) || '?'}m to Gateway, sees ${d.peerCount} ESP2 peers\n`;
-            });
-          }
+        // Show relay info if applicable
+        if (typeCode === 4) {
+          formatted += `\n🔄 Relay Info:\n`;
+          if (esp2Data.ri) formatted += `   🔗 Relay ID: ${esp2Data.ri}\n`;
+          if (esp2Data.os) formatted += `   📤 Origin: ${esp2Data.os}\n`;
+          if (esp2Data.hc !== undefined) formatted += `   🔢 Hop Count: ${esp2Data.hc}\n`;
+          if (esp2Data.md) formatted += `   📦 Data: ${esp2Data.md}\n`;
         }
         
       } else {
