@@ -24,7 +24,7 @@ let gatewayStats = {
   esp2DeviceCount: 0,
   messageStats: {
     ping: 0, handshake: 0, data: 0, triangulation: 0,
-    relay: 0, wifiScan: 0, optimization: 0, unknown: 0,
+    relay: 0, distance: 0, wifiScan: 0, optimization: 0, unknown: 0,
     total: 0, delivered: 0
   },
   gatewayInfo: {
@@ -400,9 +400,39 @@ function processESP1GatewayMessage(parsedData) {
   }
 }
 
+// Convert compact type code to verbose type string
+function typeCodeToString(code) {
+  const typeMap = {
+    0: 'ping',
+    1: 'data', 
+    2: 'handshake',
+    3: 'triangulation',
+    4: 'relay',
+    5: 'distance'
+  };
+  return typeMap[code] || 'unknown';
+}
+
+// RSSI to distance calculation (moved from ESPs to Monitor)
+function rssiToDistance(rssi, txPower = -59, pathLossExponent = 2.0) {
+  if (rssi === 0 || rssi === undefined) return -1;
+  // Using Log-Distance Path Loss Model: d = 10 ^ ((TxPower - RSSI) / (10 * n))
+  const distance = Math.pow(10, (txPower - rssi) / (10 * pathLossExponent));
+  return Math.round(distance * 100) / 100; // Round to 2 decimal places
+}
+
 function processESP2Message(parsedData) {
+  // Handle both compact (y) and verbose (message_type) formats
+  let messageType;
+  if (parsedData.y !== undefined) {
+    // Compact format: y = type code (0-5)
+    messageType = typeCodeToString(parsedData.y);
+  } else {
+    // Verbose format: message_type = string
+    messageType = parsedData.message_type || 'unknown';
+  }
+  
   // Update ESP2 message statistics
-  const messageType = parsedData.message_type || 'unknown';
   if (gatewayStats.messageStats.hasOwnProperty(messageType)) {
     gatewayStats.messageStats[messageType]++;
   } else {
@@ -412,20 +442,43 @@ function processESP2Message(parsedData) {
   gatewayStats.messageStats.total++;
   gatewayStats.messageStats.delivered++;
   
-  // Update ESP2 device count (simplified)
-  if (parsedData.source_device?.device_id) {
+  // Update ESP2 device count - handle both compact (d) and verbose (source_device) formats
+  let deviceId = null;
+  if (parsedData.d) {
+    // Compact format: d = device_id string
+    deviceId = parsedData.d;
+  } else if (parsedData.source_device?.device_id) {
+    // Verbose format
+    deviceId = parsedData.source_device.device_id;
+  }
+  
+  if (deviceId) {
     gatewayStats.esp2DeviceCount = Math.max(gatewayStats.esp2DeviceCount, 
-      parseInt(parsedData.source_device.device_id.replace(/\D/g, '')) || 1);
+      parseInt(deviceId.replace(/\D/g, '')) || 1);
+  }
+  
+  // Calculate distance from RSSI if available (for distance messages)
+  if (parsedData.r !== undefined && messageType === 'distance') {
+    const calculatedDistance = rssiToDistance(parsedData.r);
+    parsedData.calculated_distance = calculatedDistance;
   }
 }
 
 function getESP2Phase(parsedData) {
   // Determine ESP2 phase from message type
-  const messageType = parsedData.message_type;
+  // Handle both compact (y) and verbose (message_type) formats
+  let messageType;
+  if (parsedData.y !== undefined) {
+    // Compact format: y = type code (0-5)
+    messageType = typeCodeToString(parsedData.y);
+  } else {
+    messageType = parsedData.message_type;
+  }
+  
   if (!messageType) return 'Unknown';
   
   const phaseMap = {
-    'ping': 1, 'data': 1,
+    'ping': 1, 'data': 1, 'distance': 1,
     'wifi_scan': 2,
     'handshake': 3,
     'triangulation': 4,

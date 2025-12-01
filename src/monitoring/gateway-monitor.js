@@ -10,6 +10,7 @@ class GatewayMonitor {
             data: 0,
             triangulation: 0,
             relay: 0,
+            distance: 0,  // Added for Phase 1 distance measurements
             wifiScan: 0,
             optimization: 0,
             unknown: 0,
@@ -156,6 +157,16 @@ class GatewayMonitor {
         this.updateGatewayDisplay();
     }
 
+    // RSSI to distance calculation using Log-Distance Path Loss Model
+    // txPower: calibrated RSSI at 1 meter (default -59 dBm for typical ESP devices)
+    // pathLossExponent: environment factor (2.0 = free space, 2.7-3.5 = indoor with obstacles)
+    rssiToDistance(rssi, txPower = -59, pathLossExponent = 2.0) {
+        if (rssi === 0 || rssi === undefined || rssi === null) return null;
+        // Formula: d = 10 ^ ((TxPower - RSSI) / (10 * n))
+        const distance = Math.pow(10, (txPower - rssi) / (10 * pathLossExponent));
+        return Math.round(distance * 100) / 100; // Round to 2 decimal places
+    }
+
     processLogMessage(logData) {
         if (this.isPaused || !logData) return;
 
@@ -185,14 +196,45 @@ class GatewayMonitor {
         let phase = 1;
         let messageType = 'unknown';
         let deviceId = 'Unknown';
+        let rssi = null;
+        let calculatedDistance = null;
         
         if (logData.data) {
-            messageType = logData.data.message_type || 'unknown';
-            deviceId = logData.data.source_device?.device_id || 'Unknown';
+            // Get message type - ESP1 gateway already converts compact to verbose
+            messageType = logData.data.esp2_message_type || logData.data.message_type || 'unknown';
+            
+            // Get device ID - check esp2_sender_device first (from ESP1 gateway consolidated format)
+            deviceId = logData.data.esp2_sender_device || 
+                       logData.data.source_device?.device_id || 
+                       'Unknown';
+            
+            // Get RSSI from gateway message
+            rssi = logData.data.esp2_rssi;
+            
+            // Parse esp2_raw_data if available (contains compact format)
+            if (logData.data.esp2_raw_data) {
+                try {
+                    const rawData = typeof logData.data.esp2_raw_data === 'string' 
+                        ? JSON.parse(logData.data.esp2_raw_data) 
+                        : logData.data.esp2_raw_data;
+                    
+                    // Extract RSSI from compact format if not from gateway
+                    if (rssi === null && rawData.r !== undefined) {
+                        rssi = rawData.r;
+                    }
+                    
+                    // For distance messages, calculate distance from RSSI
+                    if (messageType === 'distance' && rssi !== null) {
+                        calculatedDistance = this.rssiToDistance(rssi);
+                    }
+                } catch (e) {
+                    console.log('Could not parse esp2_raw_data:', e);
+                }
+            }
             
             // Determine phase from message type
             const phaseMap = {
-                'ping': 1, 'data': 1,
+                'ping': 1, 'data': 1, 'distance': 1,
                 'wifi_scan': 2,
                 'handshake': 3,
                 'triangulation': 4,
@@ -205,6 +247,16 @@ class GatewayMonitor {
         logEntry.className = `log-entry phase-${phase}`;
 
         const formattedTime = new Date(logData.timestamp).toLocaleTimeString();
+        
+        // Build additional info string
+        let additionalInfo = '';
+        if (rssi !== null) {
+            additionalInfo += `RSSI: ${rssi} dBm`;
+            if (calculatedDistance !== null) {
+                additionalInfo += ` | Distance: ~${calculatedDistance}m`;
+            }
+            additionalInfo += '<br>';
+        }
 
         logEntry.innerHTML = `
             <div class="log-header">
@@ -214,7 +266,7 @@ class GatewayMonitor {
             <div class="log-content">
                 From: ${deviceId}<br>
                 Source: ${logData.source}<br>
-                Data: ${JSON.stringify(logData.data || {}).substring(0, 100)}...
+                ${additionalInfo}Data: ${JSON.stringify(logData.data || {}).substring(0, 100)}...
             </div>
         `;
 
@@ -248,6 +300,7 @@ class GatewayMonitor {
     updateStatisticsDisplay() {
         document.getElementById('ping-count').textContent = this.messageStats.ping;
         document.getElementById('data-count').textContent = this.messageStats.data;
+        document.getElementById('distance-count').textContent = this.messageStats.distance;
         document.getElementById('wifi-scan-count').textContent = this.messageStats.wifiScan;
         document.getElementById('handshake-count').textContent = this.messageStats.handshake;
         document.getElementById('triangulation-count').textContent = this.messageStats.triangulation;

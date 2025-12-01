@@ -607,54 +607,42 @@ void estimateRelativePositions() {
 }
 
 void performDistanceMeasurement() {
-  Serial.println("\n🎯 Performing distance measurement...");
+  Serial.println("\n📏 RSSI report...");
   
   for (int i = 0; i < peerCount; i++) {
     if (knownPeers[i].validated && knownPeers[i].rssi != 0) {
-      updatePeerPosition(knownPeers[i].deviceId, knownPeers[i].rssi);
+      Serial.printf("  %s: RSSI %d\n", knownPeers[i].deviceId.c_str(), knownPeers[i].rssi);
     }
   }
-  
-  printPositioningSummary();
 }
 
 void performTriangulation() {
-  Serial.println("\n📐 Performing triangulation...");
+  Serial.println("\n📐 Triangulation RSSI report...");
   
-  // Update all peer positions
+  // Just report RSSI values - monitor calculates positions
   for (int i = 0; i < peerCount; i++) {
     if (knownPeers[i].validated && knownPeers[i].rssi != 0) {
-      updatePeerPosition(knownPeers[i].deviceId, knownPeers[i].rssi);
+      Serial.printf("  %s: RSSI %d\n", knownPeers[i].deviceId.c_str(), knownPeers[i].rssi);
     }
   }
   
-  // Estimate relative directions
-  estimateRelativePositions();
-  
-  // Send triangulation ping
+  // Send triangulation ping with raw RSSI
   sendTriangulationPing();
-  
-  printPositioningSummary();
 }
 
 void sendTriangulationPing() {
   JsonDocument doc;
   buildEnvelope(doc, 3); // type 3 = triangulation
   
-  // Triangulation-specific fields
-  doc["r"] = WiFi.RSSI();                        // rssi
-  doc["px"] = (int)(myPosition.x * 10);          // position x * 10
-  doc["py"] = (int)(myPosition.y * 10);          // position y * 10
+  // Raw RSSI only - monitor calculates distance/position
+  doc["r"] = WiFi.RSSI();
   
-  // Add peer array with distance data (compact)
-  JsonArray pa = doc.createNestedArray("pa");    // peer_array
-  for (int i = 0; i < peerCount && i < 5; i++) { // Max 5 peers to save space
-    if (knownPeers[i].relativePos.isValid) {
-      JsonObject p = pa.createNestedObject();
-      p["d"] = knownPeers[i].deviceId;
-      p["dist"] = (int)(knownPeers[i].relativePos.distance * 10);
-      p["r"] = knownPeers[i].rssi;
-    }
+  // Add peer RSSI values (raw data only)
+  JsonArray pa = doc.createNestedArray("pa");
+  for (int i = 0; i < peerCount && i < 5; i++) {
+    JsonObject p = pa.createNestedObject();
+    p["d"] = knownPeers[i].deviceId;
+    p["r"] = knownPeers[i].rssi;  // Raw RSSI only
   }
   
   String msg;

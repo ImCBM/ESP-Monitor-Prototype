@@ -567,8 +567,8 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
   
   // Helper: Build common envelope fields for all messages
   void buildEnvelope(JsonDocument& doc, int msgType) {
-    doc["v"] = 5;
-    doc["i"] = millis() % 100000;
+    doc["v"] = PROTOCOL_VERSION;  // "5.0" string
+    doc["i"] = generateMessageId(String(msgType));
     doc["t"] = millis() / 1000;
     doc["k"] = "ESP2_NET";
     doc["y"] = msgType;
@@ -681,8 +681,7 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
   }
 
   String generateMessageId(const String& messageType) {
-    messageCounter++;
-    return String(millis() % 100000);
+    return DEVICE_ID + String("_") + messageType + String("_") + String(messageCounter++);
   }
 
   // Get message type string from code: 0=ping, 1=data, 2=handshake, 3=tri, 4=relay, 5=dist
@@ -1367,24 +1366,20 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
     }
   }
 
-  // Distance Measurement for 2-Device Setup
+  // Send RSSI report - monitor calculates distance
   void performDistanceMeasurement() {
     if (!hasEnoughPeersForPositioning()) return;
     
-    Serial.println("📏 Distance measurement...");
+    Serial.println("📏 RSSI report...");
     
     for (int i = 0; i < peerCount; i++) {
-      float distance = calculateDistanceFromRSSI(knownPeers[i].rssi);
-      knownPeers[i].relativePos.distance = distance;
-      
       JsonDocument doc;
-      buildEnvelope(doc, 5);  // 5=distance
+      buildEnvelope(doc, 5);  // 5=distance/rssi report
       doc["to"] = knownPeers[i].deviceId;
-      doc["r"] = knownPeers[i].rssi;
-      doc["dist"] = (int)(distance * 10);
+      doc["r"] = knownPeers[i].rssi;  // Raw RSSI only
       
-      esp_err_t result = broadcastMsg(doc, "📏 Dist");
-      Serial.printf("  %s: %.1fm %s\n", knownPeers[i].deviceId.c_str(), distance, result == ESP_OK ? "✓" : "❌");
+      esp_err_t result = broadcastMsg(doc, "📏 RSSI");
+      Serial.printf("  %s: RSSI %d %s\n", knownPeers[i].deviceId.c_str(), knownPeers[i].rssi, result == ESP_OK ? "✓" : "❌");
     }
   }
   
@@ -1411,25 +1406,19 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
     Serial.println("✓ Triangulation done\n");
   }
 
-  // Triangulation Data Exchange
+  // Triangulation Data Exchange - raw RSSI only
   void sendTriangulationPing() {
     JsonDocument doc;
     buildEnvelope(doc, 3);  // 3=triangulation
     doc["r"] = WiFi.RSSI();
     
-    if (myPosition.isValid) {
-      doc["px"] = (int)(myPosition.x * 10);
-      doc["py"] = (int)(myPosition.y * 10);
-    }
-    
+    // Send peer RSSI values - monitor calculates positions
     if (peerCount > 0) {
       JsonArray pa = doc["pa"].to<JsonArray>();
-      for (int i = 0; i < peerCount && i < 3; i++) {
-        if (knownPeers[i].relativePos.isValid) {
-          JsonObject p = pa.add<JsonObject>();
-          p["d"] = knownPeers[i].deviceId.substring(0, 8);
-          p["di"] = (int)(knownPeers[i].relativePos.distance * 10);
-        }
+      for (int i = 0; i < peerCount && i < 5; i++) {
+        JsonObject p = pa.add<JsonObject>();
+        p["d"] = knownPeers[i].deviceId.substring(0, 8);
+        p["r"] = knownPeers[i].rssi;  // Raw RSSI only
       }
     }
     

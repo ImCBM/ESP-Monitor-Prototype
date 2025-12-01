@@ -182,6 +182,13 @@ void initESPNowOnly() {
   // Set WiFi mode to STA for ESP-NOW only (no actual WiFi connection)
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  delay(100);  // Allow WiFi mode to stabilize
+  
+  // CRITICAL: Set channel 1 to match ESP2 devices
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+  delay(100);  // Allow channel setup to stabilize
   
   Serial.printf("ESP-NOW MAC Address: %s\n", WiFi.macAddress().c_str());
   
@@ -205,8 +212,21 @@ void initESPNowOnly() {
 
 // ============ HELPER FUNCTIONS ============
 
+// Convert compact type code to string: 0=ping, 1=data, 2=handshake, 3=triangulation, 4=relay, 5=distance
+String typeCodeToString(int typeCode) {
+  switch(typeCode) {
+    case 0: return "ping";
+    case 1: return "data";
+    case 2: return "handshake";
+    case 3: return "triangulation";
+    case 4: return "relay";
+    case 5: return "distance";
+    default: return "unknown";
+  }
+}
+
 String getPhaseFromMessageType(const String& messageType) {
-  if (messageType == "ping" || messageType == "data") {
+  if (messageType == "ping" || messageType == "data" || messageType == "distance") {
     return "Phase 1";
   } else if (messageType == "wifi_scan") {
     return "Phase 2";
@@ -334,9 +354,15 @@ void analyzeESP2Message(const String& messageData, const String& senderMAC) {
     return;
   }
   
-  // Check protocol version (Phase 6: Enhanced compatibility)
-  if (doc.containsKey("version")) {
-    String protocolVersion = doc["version"].as<String>();
+  // Check protocol version - support both compact (v) and verbose (version)
+  String protocolVersion = "";
+  if (doc.containsKey("v")) {
+    protocolVersion = doc["v"].as<String>();
+  } else if (doc.containsKey("version")) {
+    protocolVersion = doc["version"].as<String>();
+  }
+  
+  if (protocolVersion.length() > 0) {
     float version = protocolVersion.toFloat();
     float minVersion = String(MIN_ESP2_PROTOCOL).toFloat();
     float maxVersion = String(MAX_ESP2_PROTOCOL).toFloat();
@@ -349,44 +375,51 @@ void analyzeESP2Message(const String& messageData, const String& senderMAC) {
     }
   }
   
-  // Extract and categorize message type (All Phases)
-  if (doc.containsKey("message_type")) {
+  // Extract message type - support both compact (y) and verbose (message_type)
+  // Compact: y = 0:ping, 1:data, 2:handshake, 3:triangulation, 4:relay, 5:distance
+  if (doc.containsKey("y")) {
+    int typeCode = doc["y"].as<int>();
+    lastMessageType = typeCodeToString(typeCode);
+  } else if (doc.containsKey("message_type")) {
     lastMessageType = doc["message_type"].as<String>();
-    
-    // Phase-specific message type statistics
-    if (lastMessageType == "ping") {
-      messageStats.pingMessages++;  // Phase 1
-    } else if (lastMessageType == "handshake") {
-      messageStats.handshakeMessages++;  // Phase 3
-    } else if (lastMessageType == "data") {
-      messageStats.dataMessages++;  // Phase 1
-    } else if (lastMessageType == "triangulation") {
-      messageStats.triangulationMessages++;  // Phase 4
-    } else if (lastMessageType == "relay") {
-      messageStats.relayMessages++;  // Phase 5
-    } else if (lastMessageType == "wifi_scan") {
-      messageStats.wifiScanMessages++;  // Phase 2
-    } else if (lastMessageType == "optimization") {
-      messageStats.optimizationMessages++;  // Phase 6
-    } else {
-      messageStats.unknownMessages++;
-    }
   } else {
     lastMessageType = "no_type";
+  }
+  
+  // Update message statistics based on type
+  if (lastMessageType == "ping") {
+    messageStats.pingMessages++;
+  } else if (lastMessageType == "handshake") {
+    messageStats.handshakeMessages++;
+  } else if (lastMessageType == "data") {
+    messageStats.dataMessages++;
+  } else if (lastMessageType == "triangulation") {
+    messageStats.triangulationMessages++;
+  } else if (lastMessageType == "relay") {
+    messageStats.relayMessages++;
+  } else if (lastMessageType == "distance") {
+    messageStats.dataMessages++;  // Count with data messages
+  } else if (lastMessageType == "wifi_scan") {
+    messageStats.wifiScanMessages++;
+  } else if (lastMessageType == "optimization") {
+    messageStats.optimizationMessages++;
+  } else {
     messageStats.unknownMessages++;
   }
   
-  // Extract sender device ID with fallbacks
-  if (doc.containsKey("source_device") && doc["source_device"].containsKey("device_id")) {
+  // Extract sender device ID - support compact (d) and verbose formats
+  if (doc.containsKey("d")) {
+    lastSenderDevice = doc["d"].as<String>();  // Compact format
+  } else if (doc.containsKey("source_device") && doc["source_device"].containsKey("device_id")) {
     lastSenderDevice = doc["source_device"]["device_id"].as<String>();
   } else if (doc.containsKey("device_id")) {
-    lastSenderDevice = doc["device_id"].as<String>();  // Fallback
+    lastSenderDevice = doc["device_id"].as<String>();
   } else {
-    lastSenderDevice = senderMAC;  // Ultimate fallback to MAC address
+    lastSenderDevice = senderMAC;  // Ultimate fallback
   }
   
   messageStats.totalMessages = receiveMessageCount;
-  gatewayStatus.lastError = "none";  // Clear error on successful parse
+  gatewayStatus.lastError = "none";
 }
 
 // ============ PERSISTENCE FUNCTIONS ============
