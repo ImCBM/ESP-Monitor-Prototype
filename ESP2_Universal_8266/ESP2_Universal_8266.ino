@@ -264,100 +264,44 @@ void initESPNow() {
 }
 
 // ============================================================================
+//                     COMPACT MESSAGE HELPERS
+// ============================================================================
+
+// Build common envelope fields (8 fields) - compact keys
+void buildEnvelope(JsonDocument& doc, int msgType) {
+  doc["v"] = PROTOCOL_VERSION;                    // version
+  doc["i"] = generateMessageId(String(msgType)); // message_id
+  doc["t"] = millis() / 1000;                    // timestamp
+  doc["k"] = "ESP2_NET";                         // shared_key (shortened)
+  doc["y"] = msgType;                            // type: 0=ping,1=data,2=handshake,3=triangulation,4=relay,5=distance
+  doc["d"] = DEVICE_ID;                          // device_id
+  doc["o"] = DEVICE_OWNER;                       // owner
+  doc["m"] = WiFi.macAddress();                  // mac_address
+}
+
+// Serialize and broadcast to gateway
+void broadcastMsg(JsonDocument& doc, const char* label) {
+  String msg;
+  serializeJson(doc, msg);
+  Serial.printf("📡 %s (%d bytes)\n", label, msg.length());
+  esp_now_send(gatewayMAC, (uint8_t*)msg.c_str(), msg.length());
+}
+
+// ============================================================================
 //                       PEER DISCOVERY MESSAGING
 // ============================================================================
 
 void sendPeerDiscoveryPing() {
   JsonDocument doc;
+  buildEnvelope(doc, 0); // type 0 = ping
   
-  // Create envelope structure
-  doc["version"] = PROTOCOL_VERSION;
-  doc["message_id"] = generateMessageId("ping");
-  doc["timestamp"] = millis() / 1000;
-  doc["shared_key"] = SHARED_KEY;
+  // Ping-specific fields
+  doc["r"] = WiFi.RSSI();                        // rssi
+  doc["h"] = ESP.getFreeHeap() / 1024;           // heap in KB
+  doc["u"] = millis() / 1000;                    // uptime
+  doc["n"] = peerCount;                          // peer_count
   
-  // Enhanced source device info
-  JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
-  sourceDevice["device_id"] = DEVICE_ID;
-  sourceDevice["owner"] = DEVICE_OWNER;
-  sourceDevice["mac_address"] = WiFi.macAddress();
-  sourceDevice["device_type"] = DEVICE_TYPE;
-  sourceDevice["firmware_version"] = FIRMWARE_VERSION;
-  
-  doc["message_type"] = "ping";
-  
-  // Enhanced payload with Phase 2/3/4 data
-  JsonObject payload = doc["payload"].to<JsonObject>();
-  payload["rssi"] = WiFi.RSSI();
-  payload["free_heap"] = ESP.getFreeHeap();
-  payload["uptime"] = millis() / 1000;
-  payload["communication_mode"] = 0; // MODE_ESP_NOW_ONLY
-  payload["wifi_connected"] = false;
-  payload["server_reachable"] = false;
-  payload["peer_count"] = peerCount;
-  
-  // Phase 4: Positioning data
-  if (myPosition.isValid) {
-    JsonObject position = payload["my_position"].to<JsonObject>();
-    position["x"] = myPosition.x;
-    position["y"] = myPosition.y;
-    position["confidence"] = 1.0;
-  }
-  
-  payload["positioning_ready"] = hasEnoughPeersForPositioning();
-  payload["triangulation_ready"] = hasEnoughPeersForTriangulation();
-  payload["positioning_peers"] = 0;
-  
-  // Add debug info for handshake status with distance data
-  JsonArray peersDebug = payload.createNestedArray("peers_status");
-  for (int i = 0; i < peerCount; i++) {
-    JsonObject peerInfo = peersDebug.createNestedObject();
-    peerInfo["device_id"] = knownPeers[i].deviceId;
-    peerInfo["handshake_complete"] = knownPeers[i].handshakeComplete;
-    peerInfo["validated"] = knownPeers[i].validated;
-    peerInfo["rssi"] = knownPeers[i].rssi;
-    
-    // Add distance and positioning data
-    if (knownPeers[i].relativePos.isValid) {
-      peerInfo["distance"] = knownPeers[i].relativePos.distance;
-      peerInfo["direction"] = directionToString(knownPeers[i].relativePos.direction);
-      peerInfo["confidence"] = knownPeers[i].relativePos.confidence;
-    }
-  }
-  
-  // Count peers with valid positions
-  for (int i = 0; i < peerCount; i++) {
-    if (knownPeers[i].relativePos.isValid) {
-      payload["positioning_peers"] = payload["positioning_peers"].as<int>() + 1;
-    }
-  }
-  
-  // Enhanced capabilities
-  JsonArray capabilities = payload["capabilities"].to<JsonArray>();
-  capabilities.add("peer_discovery");
-  capabilities.add("enhanced_messaging");
-  capabilities.add("mode_switching");
-  capabilities.add("wifi_scanning");
-  capabilities.add("triangulation");
-  capabilities.add("positioning");
-  capabilities.add("message_relaying");
-  capabilities.add("message_storage");
-  
-  // Phase 5: Relay status
-  payload["stored_messages"] = 0;
-  payload["relay_capable"] = false;
-  payload["server_delivery_available"] = false;
-  
-  // Serialize and send
-  String message;
-  serializeJson(doc, message);
-  
-  Serial.println("📡 Broadcasting Enhanced Peer Discovery Ping");
-  Serial.printf("Mode: ESP-NOW Only | Triangulation: %s\n",
-    hasEnoughPeersForTriangulation() ? "Ready" : "Not Ready");
-  
-  esp_now_send(gatewayMAC, (uint8_t*)message.c_str(), message.length());
-  Serial.println("✓ Enhanced ping broadcast sent (ESP1 Gateway listening)\n");
+  broadcastMsg(doc, "Ping");
 }
 
 void sendHandshakeResponse(const String& replyToMessageId, const uint8_t* peerMac) {
@@ -366,133 +310,28 @@ void sendHandshakeResponse(const String& replyToMessageId, const uint8_t* peerMa
 
 void sendEnhancedHandshake(const String& replyToMessageId, const uint8_t* peerMac) {
   JsonDocument doc;
+  buildEnvelope(doc, 2); // type 2 = handshake
   
-  // Create envelope structure
-  doc["version"] = PROTOCOL_VERSION;
-  doc["message_id"] = generateMessageId("handshake");
-  doc["timestamp"] = millis() / 1000;
-  doc["shared_key"] = SHARED_KEY;
-  doc["reply_to"] = replyToMessageId;
+  // Handshake-specific fields
+  doc["re"] = replyToMessageId;                  // reply_to
+  doc["ok"] = 1;                                 // accepted
   
-  // Enhanced source device info
-  JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
-  sourceDevice["device_id"] = DEVICE_ID;
-  sourceDevice["owner"] = DEVICE_OWNER;
-  sourceDevice["mac_address"] = WiFi.macAddress();
-  sourceDevice["device_type"] = DEVICE_TYPE;
-  sourceDevice["firmware_version"] = FIRMWARE_VERSION;
-  
-  doc["message_type"] = "handshake_response";
-  
-  // Enhanced payload
-  JsonObject payload = doc["payload"].to<JsonObject>();
-  payload["handshake_status"] = "ACCEPTED";
-  payload["peer_validated"] = true;
-  payload["security_level"] = "standard";
-  
-  JsonArray capabilities = payload["capabilities"].to<JsonArray>();
-  capabilities.add("peer_discovery");
-  capabilities.add("enhanced_messaging");
-  capabilities.add("mode_switching");
-  capabilities.add("wifi_scanning");
-  capabilities.add("triangulation");
-  capabilities.add("positioning");
-  capabilities.add("message_relaying");
-  capabilities.add("message_storage");
-  
-  payload["communication_mode"] = 0; // MODE_ESP_NOW_ONLY
-  payload["supports_triangulation"] = true;
-  payload["supports_positioning"] = true;
-  
-  String message;
-  serializeJson(doc, message);
-  
-  esp_now_send((uint8_t*)peerMac, (uint8_t*)message.c_str(), message.length());
-  
-  Serial.printf("🤝 Sent enhanced handshake response to %s\n", macToString(peerMac).c_str());
+  String msg;
+  serializeJson(doc, msg);
+  Serial.printf("🤝 Handshake to %s (%d bytes)\n", macToString(peerMac).c_str(), msg.length());
+  esp_now_send((uint8_t*)peerMac, (uint8_t*)msg.c_str(), msg.length());
 }
 
 void sendDataMessage() {
   JsonDocument doc;
+  buildEnvelope(doc, 1); // type 1 = data
   
-  // Create envelope structure
-  doc["version"] = PROTOCOL_VERSION;
-  doc["message_id"] = generateMessageId("data");
-  doc["timestamp"] = millis() / 1000;
-  doc["shared_key"] = SHARED_KEY;
+  // Data-specific fields
+  doc["h"] = ESP.getFreeHeap() / 1024;           // heap in KB
+  doc["u"] = millis() / 1000;                    // uptime
+  doc["n"] = peerCount;                          // peer_count
   
-  // Enhanced source device info
-  JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
-  sourceDevice["device_id"] = DEVICE_ID;
-  sourceDevice["owner"] = DEVICE_OWNER;
-  sourceDevice["mac_address"] = WiFi.macAddress();
-  sourceDevice["device_type"] = DEVICE_TYPE;
-  sourceDevice["firmware_version"] = FIRMWARE_VERSION;
-  
-  doc["message_type"] = "data";
-  
-  // Enhanced payload with sensor and system data
-  JsonObject payload = doc["payload"].to<JsonObject>();
-  
-  JsonObject sensorData = payload["sensor_data"].to<JsonObject>();
-  sensorData["temperature"] = 23.5 + (random(-50, 50) / 10.0); // Simulated sensor data
-  sensorData["humidity"] = 65.0 + (random(-100, 100) / 10.0);
-  
-  JsonObject systemData = payload["system_data"].to<JsonObject>();
-  systemData["free_heap"] = ESP.getFreeHeap();
-  systemData["uptime"] = millis() / 1000;
-  systemData["peer_count"] = peerCount;
-  systemData["communication_mode"] = 0; // MODE_ESP_NOW_ONLY
-  systemData["wifi_connected"] = false;
-  systemData["server_reachable"] = false;
-  
-  // Network status summary
-  JsonObject networkStatus = payload["network_status"].to<JsonObject>();
-  networkStatus["trusted_peers"] = 0;
-  networkStatus["validated_peers"] = 0;
-  
-  for (int i = 0; i < peerCount; i++) {
-    if (knownPeers[i].handshakeComplete) networkStatus["trusted_peers"] = networkStatus["trusted_peers"].as<int>() + 1;
-    if (knownPeers[i].validated) networkStatus["validated_peers"] = networkStatus["validated_peers"].as<int>() + 1;
-  }
-  
-  // Add relay chain (empty for original message)
-  JsonArray relayChain = payload["relay_chain"].to<JsonArray>();
-  
-  // Phase 4: Add nearby peers with distance/positioning data
-  if (peerCount > 0) {
-    JsonArray nearbyPeers = payload.createNestedArray("nearby_peers");
-    for (int i = 0; i < peerCount; i++) {
-      if (knownPeers[i].validated) {
-        JsonObject peer = nearbyPeers.createNestedObject();
-        peer["device_id"] = knownPeers[i].deviceId;
-        peer["owner"] = knownPeers[i].owner;
-        peer["rssi"] = knownPeers[i].rssi;
-        
-        // Add distance and positioning if available
-        if (knownPeers[i].relativePos.isValid) {
-          peer["distance"] = knownPeers[i].relativePos.distance;
-          peer["direction"] = directionToString(knownPeers[i].relativePos.direction);
-          peer["confidence"] = knownPeers[i].relativePos.confidence;
-        }
-      }
-    }
-  }
-  
-  // Serialize and send
-  String message;
-  serializeJson(doc, message);
-  
-  Serial.println("📊 Broadcasting Enhanced Data Message");
-  Serial.printf("Peers: %d total, %d trusted, %d validated\n", 
-                peerCount, 
-                networkStatus["trusted_peers"].as<int>(),
-                networkStatus["validated_peers"].as<int>());
-  Serial.println("Status: ESP-NOW Only");
-  
-  esp_now_send(gatewayMAC, (uint8_t*)message.c_str(), message.length());
-  Serial.println("✓ Enhanced data broadcast sent (ESP1 Gateway listening)\n");
-  
+  broadcastMsg(doc, "Data");
   printKnownPeers();
 }
 
@@ -503,19 +342,17 @@ void sendDataMessage() {
 void onESPNowReceive(uint8_t *mac, uint8_t *data, uint8_t len) {
   // Get RSSI (ESP8266 doesn't provide RSSI in callback, estimate from WiFi)
   int rssi = WiFi.RSSI();
-  if (rssi == 0 || rssi > 0) {
-    rssi = -60; // Default value if unavailable
-  }
+  if (rssi >= 0) rssi = -60; // Default if unavailable
   
   char buffer[len + 1];
   memcpy(buffer, data, len);
   buffer[len] = '\0';
   
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<512> doc;
   DeserializationError error = deserializeJson(doc, buffer);
   
   if (error) {
-    Serial.println("❌ JSON parsing failed");
+    Serial.println("❌ JSON parse fail");
     return;
   }
   
@@ -528,21 +365,15 @@ void onESPNowReceive(uint8_t *mac, uint8_t *data, uint8_t len) {
 }
 
 bool validateEnvelope(JsonDocument& doc) {
-  // Support both old and new envelope formats
-  bool hasOldFormat = doc.containsKey("envelope_version") && 
-                      doc.containsKey("sender_device_id");
-  bool hasNewFormat = doc.containsKey("version") && 
-                      doc.containsKey("source_device");
+  // Support compact (v,i,y) and verbose (version, message_id, message_type) formats
+  bool hasCompact = doc.containsKey("v") && doc.containsKey("i") && doc.containsKey("y");
+  bool hasVerbose = doc.containsKey("version") && doc.containsKey("message_id") && doc.containsKey("message_type");
   
-  if (!hasOldFormat && !hasNewFormat) {
-    return false;
-  }
+  if (!hasCompact && !hasVerbose) return false;
   
-  if (!doc.containsKey("message_id") ||
-      !doc.containsKey("message_type") ||
-      !doc.containsKey("timestamp")) {
-    return false;
-  }
+  // Check shared key
+  const char* key = doc["k"] | doc["shared_key"] | "";
+  if (strcmp(key, "ESP2_NET") != 0 && strcmp(key, SHARED_KEY) != 0) return false;
   
   return true;
 }
@@ -552,58 +383,47 @@ String generateMessageId(const String& messageType) {
 }
 
 void processIncomingMessage(JsonDocument& doc, const uint8_t* senderMac, int rssi) {
-  String messageType = doc["message_type"].as<String>();
-  String messageId = doc["message_id"].as<String>();
+  // Support both compact (y) and verbose (message_type) formats
+  int msgType = doc["y"] | -1;
+  String messageType = doc["message_type"] | "";
+  String messageId = doc["i"] | doc["message_id"] | "";
   
-  // Handle both old and new format
-  String senderDevice = doc.containsKey("source_device") ? 
-                        doc["source_device"]["device_id"].as<String>() : 
-                        doc["sender_device_id"].as<String>();
-  String senderOwner = doc.containsKey("source_device") ? 
-                       doc["source_device"]["owner"].as<String>() : 
-                       doc["sender_owner"].as<String>();
+  // Get sender info - compact or verbose
+  String senderDevice = doc["d"] | (doc["source_device"]["device_id"] | doc["sender_device_id"] | "");
+  String senderOwner = doc["o"] | (doc["source_device"]["owner"] | doc["sender_owner"] | "");
   
-  Serial.printf("📨 Received %s from %s (RSSI: %d)\n", messageType.c_str(), senderDevice.c_str(), rssi);
-  
-  // Validate credentials
-  if (!validatePeerCredentials(doc)) {
-    Serial.println("❌ Peer validation failed");
-    return;
-  }
+  Serial.printf("📨 Type %d from %s (RSSI: %d)\n", msgType, senderDevice.c_str(), rssi);
   
   String macAddr = macToString(senderMac);
   addOrUpdatePeer(senderDevice, senderOwner, macAddr, rssi);
   
-  if (messageType == "ping") {
+  // Handle by type code or message_type string
+  if (msgType == 0 || messageType == "ping") {
     // Prevent handshake loops
-    if (messageId == lastHandshakeMessageId) {
-      return;
-    }
+    if (messageId == lastHandshakeMessageId) return;
     lastHandshakeMessageId = messageId;
-    
     sendHandshakeResponse(messageId, senderMac);
     
-  } else if (messageType == "handshake_response") {
-    JsonObject payload = doc["payload"];
-    String status = payload["handshake_status"].as<String>();
+  } else if (msgType == 2 || messageType == "handshake_response") {
+    // Check for acceptance - compact (ok=1) or verbose
+    int accepted = doc["ok"] | 0;
+    String status = doc["payload"]["handshake_status"] | "";
     
-    if (status == "ACCEPTED") {
-      // Mark peer as validated
+    if (accepted == 1 || status == "ACCEPTED") {
       for (int i = 0; i < peerCount; i++) {
         if (knownPeers[i].deviceId == senderDevice) {
           knownPeers[i].handshakeComplete = true;
           knownPeers[i].validated = true;
-          Serial.printf("✅ Handshake complete with %s\n", senderDevice.c_str());
+          Serial.printf("✅ Handshake OK: %s\n", senderDevice.c_str());
           break;
         }
       }
     }
     
-  } else if (messageType == "triangulation") {
+  } else if (msgType == 3 || messageType == "triangulation") {
     processTriangulationData(doc, rssi);
     
-  } else if (messageType == "data") {
-    // Process data messages from other ESP2s
+  } else if (msgType == 1 || messageType == "data") {
     updatePeerPosition(senderDevice, rssi);
   }
 }
@@ -678,22 +498,13 @@ void onDataSent(uint8_t *mac, uint8_t status) {
 // ============================================================================
 
 bool validatePeerCredentials(JsonDocument& doc) {
-  // Check for shared_key in root or payload
-  String receivedKey = "";
+  // Check for shared_key - compact (k) or verbose
+  const char* key = doc["k"] | doc["shared_key"] | (doc["payload"]["shared_key"] | "");
   
-  if (doc.containsKey("shared_key")) {
-    receivedKey = doc["shared_key"].as<String>();
-  } else if (doc.containsKey("payload") && doc["payload"].containsKey("shared_key")) {
-    receivedKey = doc["payload"]["shared_key"].as<String>();
-  } else {
+  if (strcmp(key, "ESP2_NET") != 0 && strcmp(key, SHARED_KEY) != 0) {
+    Serial.println("❌ Invalid key");
     return false;
   }
-  
-  if (receivedKey != SHARED_KEY) {
-    Serial.println("❌ Invalid shared key");
-    return false;
-  }
-  
   return true;
 }
 
@@ -828,53 +639,40 @@ void performTriangulation() {
 
 void sendTriangulationPing() {
   JsonDocument doc;
+  buildEnvelope(doc, 3); // type 3 = triangulation
   
-  // Create envelope structure
-  doc["version"] = PROTOCOL_VERSION;
-  doc["message_id"] = generateMessageId("triangulation");
-  doc["timestamp"] = millis() / 1000;
-  doc["shared_key"] = SHARED_KEY;
+  // Triangulation-specific fields
+  doc["r"] = WiFi.RSSI();                        // rssi
+  doc["px"] = (int)(myPosition.x * 10);          // position x * 10
+  doc["py"] = (int)(myPosition.y * 10);          // position y * 10
   
-  // Enhanced source device info
-  JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
-  sourceDevice["device_id"] = DEVICE_ID;
-  sourceDevice["owner"] = DEVICE_OWNER;
-  sourceDevice["mac_address"] = WiFi.macAddress();
-  sourceDevice["device_type"] = DEVICE_TYPE;
-  sourceDevice["firmware_version"] = FIRMWARE_VERSION;
-  
-  doc["message_type"] = "triangulation";
-  
-  JsonObject payload = doc.createNestedObject("payload");
-  payload["request_type"] = "position_update";
-  
-  // Include current peer positions
-  JsonArray peers = payload.createNestedArray("known_peers");
-  for (int i = 0; i < peerCount; i++) {
+  // Add peer array with distance data (compact)
+  JsonArray pa = doc.createNestedArray("pa");    // peer_array
+  for (int i = 0; i < peerCount && i < 5; i++) { // Max 5 peers to save space
     if (knownPeers[i].relativePos.isValid) {
-      JsonObject peerObj = peers.createNestedObject();
-      peerObj["device_id"] = knownPeers[i].deviceId;
-      peerObj["distance"] = knownPeers[i].relativePos.distance;
-      peerObj["rssi"] = knownPeers[i].rssi;
+      JsonObject p = pa.createNestedObject();
+      p["d"] = knownPeers[i].deviceId;
+      p["dist"] = (int)(knownPeers[i].relativePos.distance * 10);
+      p["r"] = knownPeers[i].rssi;
     }
   }
   
-  String jsonString;
-  serializeJson(doc, jsonString);
+  String msg;
+  serializeJson(doc, msg);
+  Serial.printf("📐 Triangulation (%d bytes)\n", msg.length());
   
   // Send to all known peers
   for (int i = 0; i < peerCount; i++) {
     uint8_t mac[6];
     sscanf(knownPeers[i].macAddress.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-    esp_now_send(mac, (uint8_t*)jsonString.c_str(), jsonString.length());
+    esp_now_send(mac, (uint8_t*)msg.c_str(), msg.length());
   }
-  
-  Serial.println("📡 Sent triangulation ping to peers");
 }
 
 void processTriangulationData(JsonDocument& doc, int rssi) {
-  String senderDevice = doc["sender_device_id"].as<String>();
+  // Support both compact (d) and verbose formats
+  String senderDevice = doc["d"] | (doc["source_device"]["device_id"] | doc["sender_device_id"] | "");
   updatePeerPosition(senderDevice, rssi);
 }
 
