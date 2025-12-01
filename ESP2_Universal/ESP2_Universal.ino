@@ -495,9 +495,9 @@ const int MAX_HANDSHAKE_ATTEMPTS = 3;             // Maximum retry attempts
       }
     }
     
-    // Clean up old peers (remove if not seen for 5 minutes)
+    // Clean up old peers (remove if not seen for 30 seconds)
     for (int i = 0; i < peerCount; i++) {
-      if (currentTime - knownPeers[i].lastSeen > 300000) {
+      if (currentTime - knownPeers[i].lastSeen > 30000) {
         Serial.printf("Removing stale peer: %s\n", knownPeers[i].deviceId.c_str());
         // Shift remaining peers
         for (int j = i; j < peerCount - 1; j++) {
