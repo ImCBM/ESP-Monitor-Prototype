@@ -1,0 +1,287 @@
+	/*
+	* Peer Device - ESP32 Send-Only Firmware
+	* 
+	* This is a simple peer device that:
+	* - Sends ping messages to tower/gateway via ESP-NOW
+	* - Sends data messages when button is pressed
+	* - Does NOT receive any messages (send-only)
+	* 
+	* Hardware: Any ESP32 board with a button on GPIO 0
+	*/
+
+	#include <WiFi.h>
+	#include <esp_now.h>
+	#include <esp_wifi.h>
+	#include <ArduinoJson.h>
+
+	// ============================================================================
+	//                         DEVICE CONFIGURATION
+	// ============================================================================
+	const char* DEVICE_ID = "ESP2_SENSOR_001";
+	const char* DEVICE_OWNER = "user_alice";
+	const char* SHARED_KEY = "ndrrmc_441";
+	const char* GATEWAY_PASSCODE = "ndrrmc_passcode_gateway";
+	const char* PROTOCOL_VERSION = "5.0";
+	const char* DEVICE_TYPE = "ESP2_UNIVERSAL";
+	const char* FIRMWARE_VERSION = "2.0.0";
+	const int ESP_NOW_CHANNEL = 1;
+
+	// ============================================================================
+	//                         STATE VARIABLES
+	// ============================================================================
+	unsigned long messageCounter = 0;
+	bool espNowInitialized = false;
+
+	// ============================================================================
+	//                         HELPER FUNCTIONS
+	// ============================================================================
+	String generateMessageId(const String& messageType) {
+		messageCounter++;
+		return messageType + "_" + String(millis()) + "_" + String(messageCounter);
+	}
+
+	void onDataSent(const esp_now_send_info_t *send_info, esp_now_send_status_t status) {
+		Serial.printf("ESP-NOW Send: %s\n", status == ESP_NOW_SEND_SUCCESS ? "✓ SUCCESS" : "❌ FAILED");
+	}
+
+	void initESPNow() {
+		if (espNowInitialized) return;
+		
+		Serial.println("Initializing ESP-NOW (send-only)...");
+		
+		WiFi.mode(WIFI_STA);
+		WiFi.disconnect();
+		delay(100);
+		
+		// Set channel
+		esp_wifi_set_promiscuous(true);
+		esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+		esp_wifi_set_promiscuous(false);
+		delay(100);
+		
+		esp_err_t result = esp_now_init();
+		if (result != ESP_OK) {
+			Serial.printf("❌ Error initializing ESP-NOW: %d\n", result);
+			return;
+		}
+		
+		// Register send callback only (no receive callback)
+		esp_now_register_send_cb(onDataSent);
+		
+		// Add broadcast peer
+		esp_now_peer_info_t peerInfo = {};
+		memcpy(peerInfo.peer_addr, (uint8_t[]){0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, 6);
+		peerInfo.channel = ESP_NOW_CHANNEL;
+		peerInfo.encrypt = false;
+		
+		esp_err_t addResult = esp_now_add_peer(&peerInfo);
+		if (addResult != ESP_OK) {
+			Serial.printf("❌ Failed to add broadcast peer: %d\n", addResult);
+			return;
+		}
+		
+		espNowInitialized = true;
+		Serial.println("✓ ESP-NOW initialized (send-only mode)");
+		Serial.printf("✓ Broadcasting on channel %d\n", ESP_NOW_CHANNEL);
+	}
+
+	// ============================================================================
+	//                         SEND PING MESSAGE
+	// ============================================================================
+	void sendPeerDiscoveryPing() {
+		if (!espNowInitialized) {
+			initESPNow();
+		}
+		
+		JsonDocument doc;
+		
+		// Create envelope structure
+		doc["version"] = PROTOCOL_VERSION;
+		doc["message_id"] = generateMessageId("ping");
+		doc["timestamp"] = millis() / 1000;
+		doc["shared_key"] = SHARED_KEY;
+		
+		// Source device info
+		JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
+		sourceDevice["device_id"] = DEVICE_ID;
+		sourceDevice["owner"] = DEVICE_OWNER;
+		sourceDevice["mac_address"] = WiFi.macAddress();
+		sourceDevice["device_type"] = DEVICE_TYPE;
+		sourceDevice["firmware_version"] = FIRMWARE_VERSION;
+		
+		doc["message_type"] = "ping";
+		
+		// Payload
+		JsonObject payload = doc["payload"].to<JsonObject>();
+		payload["free_heap"] = ESP.getFreeHeap();
+		payload["uptime"] = millis() / 1000;
+		
+		// Serialize and send
+		String message;
+		serializeJson(doc, message);
+		
+		Serial.println("📡 Sending Ping to Tower");
+		
+		uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+		esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
+		
+		if (result == ESP_OK) {
+			Serial.println("✓ Ping sent");
+		} else {
+			Serial.printf("❌ Error sending ping: %d\n", result);
+		}
+	}
+
+	// ============================================================================
+	//                         SEND DATA MESSAGE
+	// ============================================================================
+	void sendDataMessage() {
+		if (!espNowInitialized) {
+			initESPNow();
+		}
+		
+		JsonDocument doc;
+		
+		// Create envelope structure
+		doc["version"] = PROTOCOL_VERSION;
+		doc["message_id"] = generateMessageId("data");
+		doc["timestamp"] = millis() / 1000;
+		doc["shared_key"] = SHARED_KEY;
+		
+		// Source device info
+		JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
+		sourceDevice["device_id"] = DEVICE_ID;
+		sourceDevice["owner"] = DEVICE_OWNER;
+		sourceDevice["mac_address"] = WiFi.macAddress();
+		sourceDevice["device_type"] = DEVICE_TYPE;
+		sourceDevice["firmware_version"] = FIRMWARE_VERSION;
+		
+		doc["message_type"] = "data";
+		
+		// Payload with sensor data
+		JsonObject payload = doc["payload"].to<JsonObject>();
+		
+		JsonObject sensorData = payload["sensor_data"].to<JsonObject>();
+		sensorData["temperature"] = 23.5 + (random(-50, 50) / 10.0);  // Simulated
+		sensorData["humidity"] = 65.0 + (random(-100, 100) / 10.0);   // Simulated
+		
+		JsonObject systemData = payload["system_data"].to<JsonObject>();
+		systemData["free_heap"] = ESP.getFreeHeap();
+		systemData["uptime"] = millis() / 1000;
+		
+		// Serialize and send
+		String message;
+		serializeJson(doc, message);
+		
+		Serial.println("📊 Sending Data to Tower");
+		
+		uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+		esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
+		
+		if (result == ESP_OK) {
+			Serial.println("✓ Data sent");
+		} else {
+			Serial.printf("❌ Error sending data: %d\n", result);
+		}
+	}
+
+	// ============================================================================
+	//                         SEND TO GATEWAY
+	// ============================================================================
+	void sendToGateway() {
+		if (!espNowInitialized) {
+			initESPNow();
+		}
+		
+		JsonDocument doc;
+		
+		// Create envelope structure
+		doc["version"] = PROTOCOL_VERSION;
+		doc["message_id"] = generateMessageId("gateway_data");
+		doc["timestamp"] = millis() / 1000;
+		doc["shared_key"] = SHARED_KEY;
+		doc["gateway_passcode"] = GATEWAY_PASSCODE;
+		
+		// Source device info
+		JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
+		sourceDevice["device_id"] = DEVICE_ID;
+		sourceDevice["owner"] = DEVICE_OWNER;
+		sourceDevice["mac_address"] = WiFi.macAddress();
+		sourceDevice["device_type"] = DEVICE_TYPE;
+		sourceDevice["firmware_version"] = FIRMWARE_VERSION;
+		
+		doc["message_type"] = "gateway_data";
+		
+		// Payload with sensor data for gateway
+		JsonObject payload = doc["payload"].to<JsonObject>();
+		
+		JsonObject sensorData = payload["sensor_data"].to<JsonObject>();
+		sensorData["temperature"] = 23.5 + (random(-50, 50) / 10.0);
+		sensorData["humidity"] = 65.0 + (random(-100, 100) / 10.0);
+		
+		JsonObject systemData = payload["system_data"].to<JsonObject>();
+		systemData["free_heap"] = ESP.getFreeHeap();
+		systemData["uptime"] = millis() / 1000;
+		
+		payload["destination"] = "gateway";
+		payload["priority"] = "normal";
+		
+		// Serialize and send
+		String message;
+		serializeJson(doc, message);
+		
+		Serial.println("🚀 Sending Data to Gateway (with passcode)");
+		
+		uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+		esp_err_t result = esp_now_send(broadcastAddress, (uint8_t*)message.c_str(), message.length());
+		
+		if (result == ESP_OK) {
+			Serial.println("✓ Gateway data sent");
+		} else {
+			Serial.printf("❌ Error sending to gateway: %d\n", result);
+		}
+	}
+
+	// ============================================================================
+	//                         BUTTON HANDLING
+	// ============================================================================
+	const int BUTTON_PIN = 12;  // Button GPIO
+
+	// ============================================================================
+	//                              SETUP
+	// ============================================================================
+	void setup() {
+		Serial.begin(115200);
+		delay(1000);
+		
+		Serial.println("\n=================================");
+		Serial.println("Peer Device - Send-Only Firmware");
+		Serial.println("=================================");
+		Serial.printf("Device ID: %s\n", DEVICE_ID);
+		Serial.printf("Owner: %s\n", DEVICE_OWNER);
+		Serial.println("=================================\n");
+		
+		Serial.print("MAC Address: ");
+		Serial.println(WiFi.macAddress());
+		
+		// Initialize ESP-NOW
+		initESPNow();
+		
+		// Setup button
+		pinMode(BUTTON_PIN, INPUT_PULLUP);
+		
+		Serial.println("✓ Ready - Press button to send ping");
+		Serial.println();
+	}
+
+	// ============================================================================
+	//                              MAIN LOOP
+	// ============================================================================
+	void loop() {
+		// Handle button press (send ping when pressed)
+		if (digitalRead(BUTTON_PIN) == LOW) {
+			Serial.println("\n🔘 Button pressed!");
+			sendPeerDiscoveryPing();
+			delay(500);  // Debounce
+		}
+	}

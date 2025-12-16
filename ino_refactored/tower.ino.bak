@@ -1,0 +1,1447 @@
+/*
+ * Tower/Gateway - ESP32 Receiver Firmware
+ * 
+ * This is the tower/gateway firmware that:
+ * - Receives messages from peer ESP32 devices via ESP-NOW
+ * - Validates incoming messages using shared key authentication
+ * - Tracks peer devices and their positions
+ * - Stores messages for relay/forwarding
+ * - Can connect to WiFi for server communication
+ * 
+ * Hardware: Any ESP32 board
+ */
+
+// ============================================================================
+//                           LIBRARY INCLUDES
+// ============================================================================
+
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+#include <map>
+#include <vector>
+
+// ============================================================================
+//                         DEVICE CONFIGURATION
+// ============================================================================
+// CHANGE THESE FOR EACH TOWER DEVICE
+const char* DEVICE_ID = "TOWER_001";                // Unique device identifier
+const char* DEVICE_OWNER = "tower_admin";           // Device owner name
+const char* SHARED_KEY = "ndrrmc_441";              // Authentication key for peer validation
+const char* GATEWAY_PASSCODE = "ndrrmc_passcode_gateway";  // Gateway-specific passcode
+
+// Protocol Configuration
+const char* PROTOCOL_VERSION = "5.0";               // Updated for Phase 5
+const char* DEVICE_TYPE = "ESP2_UNIVERSAL";         // Device type identifier
+const char* FIRMWARE_VERSION = "2.0.0";             // Firmware version
+const int ESP_NOW_CHANNEL = 1;                      // Fixed channel for all ESP2s
+
+// ============================================================================
+//                       MESSAGE RELAYING CONFIGURATION
+// ============================================================================
+const int MAX_STORED_MESSAGES = 20;
+const unsigned long MESSAGE_RELAY_INTERVAL = 15000;
+const unsigned long MESSAGE_EXPIRY_TIME = 300000;
+const int MAX_RELAY_HOPS = 5;
+const unsigned long RELAY_ATTEMPT_COOLDOWN = 30000;
+
+// ============================================================================
+//                          WIFI CONFIGURATION
+// ============================================================================
+struct WiFiCredential {
+	String ssid;
+	String password;
+	bool isOpen;
+};
+
+WiFiCredential knownNetworks[] = {
+	{"", "", false} // End marker - add your networks above
+};
+
+const char* TEST_SERVER_HOST = "8.8.8.8";
+const int TEST_SERVER_PORT = 53;
+const char* WEBSOCKET_SERVER_IP = "192.168.137.1";
+const uint16_t WEBSOCKET_SERVER_PORT = 8080;
+
+// ============================================================================
+//                        SECURITY CONFIGURATION
+// ============================================================================
+const int HANDSHAKE_TIMEOUT = 10000;
+const int MAX_HANDSHAKE_ATTEMPTS = 3;
+
+// ============================================================================
+//                     POSITIONING CONFIGURATION
+// ============================================================================
+const unsigned long POSITIONING_INTERVAL = 10000;
+const int MIN_PEERS_FOR_POSITIONING = 1;
+const int MIN_PEERS_FOR_TRIANGULATION = 3;
+const float RSSI_CALIBRATION_DISTANCE = 1.0;
+const int RSSI_CALIBRATION_VALUE = -40;
+const float PATH_LOSS_EXPONENT = 2.0;
+const float MAX_POSITIONING_DISTANCE = 100.0;
+
+// ============================================================================
+//                        DATA STRUCTURES
+// ============================================================================
+enum Direction {
+	DIR_UNKNOWN = 0,
+	DIR_NORTH = 1,
+	DIR_NORTHEAST = 2,
+	DIR_EAST = 3,
+	DIR_SOUTHEAST = 4,
+	DIR_SOUTH = 5,
+	DIR_SOUTHWEST = 6,
+	DIR_WEST = 7,
+	DIR_NORTHWEST = 8
+};
+
+struct Position {
+	float x;
+	float y;
+	bool isValid;
+	unsigned long lastUpdated;
+};
+
+struct RelativePosition {
+	float distance;
+	Direction direction;
+	float confidence;
+	unsigned long lastUpdated;
+	bool isValid;
+};
+
+struct RelayHop {
+	String deviceId;
+	String deviceOwner;
+	unsigned long timestamp;
+	int rssi;
+};
+
+struct StoredMessage {
+	String messageId;
+	String originalSender;
+	String senderOwner;
+	JsonDocument messageData;
+	unsigned long timestamp;
+	unsigned long lastRelayAttempt;
+	bool deliveredToServer;
+	bool isOwnMessage;
+	int hopCount;
+	std::vector<RelayHop> relayChain;
+	std::vector<String> attemptedPeers;
+};
+
+// ============================================================================
+//                      TIMING & OPERATIONAL VARIABLES
+// ============================================================================
+unsigned long lastPeerDiscovery = 0;
+const unsigned long PEER_DISCOVERY_INTERVAL = 5000;
+unsigned long lastDataSend = 0;
+const unsigned long DATA_SEND_INTERVAL = 10000;
+
+bool espNowActive = false;
+bool wifiModeActive = false;
+unsigned long lastRadioSwitch = 0;
+const unsigned long RADIO_SWITCH_DELAY = 100;
+
+unsigned long lastWiFiScan = 0;
+const unsigned long WIFI_SCAN_INTERVAL = 300000;
+unsigned long lastServerCheck = 0;
+const unsigned long SERVER_CHECK_INTERVAL = 300000;
+unsigned long lastModeSwitch = 0;
+const unsigned long MODE_SWITCH_COOLDOWN = 10000;
+
+unsigned long lastPositioning = 0;
+struct PositionUpdate {
+	String targetDeviceId;
+	float distance;
+	int rssi;
+	unsigned long timestamp;
+};
+std::vector<PositionUpdate> recentRSSIMeasurements;
+
+unsigned long lastRelayCheck = 0;
+unsigned long lastServerAttempt = 0;
+const unsigned long SERVER_DELIVERY_INTERVAL = 60000;
+StoredMessage messageStorage[MAX_STORED_MESSAGES];
+int storedMessageCount = 0;
+unsigned long messageIdCounter = 0;
+
+// ============================================================================
+//                     COMMUNICATION MODE MANAGEMENT
+// ============================================================================
+enum CommMode {
+	MODE_ESP_NOW_ONLY,
+	MODE_WIFI_BACKUP,
+	MODE_WIFI_PRIMARY,
+	MODE_WIFI_ONLY
+};
+
+CommMode currentMode = MODE_ESP_NOW_ONLY;
+bool wifiConnected = false;
+String connectedSSID = "";
+int32_t wifiChannel = 0;
+
+unsigned long messageCounter = 0;
+String lastHandshakeMessageId = "";
+std::map<String, unsigned long> handshakeAttempts;
+
+// ============================================================================
+//                         PEER MANAGEMENT
+// ============================================================================
+struct PeerDevice {
+	String deviceId;
+	String owner;
+	String macAddress;
+	String deviceType;
+	String firmwareVersion;
+	int rssi;
+	unsigned long lastSeen;
+	unsigned long firstSeen;
+	bool handshakeComplete;
+	bool validated;
+	int handshakeAttempts;
+	unsigned long lastHandshakeAttempt;
+	std::vector<String> capabilities;
+	CommMode preferredMode;
+	RelativePosition relativePos;
+	std::vector<int> rssiHistory;
+	Position absolutePos;
+	bool supportsTriangulation;
+};
+
+const int MAX_PEERS = 15;
+PeerDevice knownPeers[MAX_PEERS];
+int peerCount = 0;
+
+Position myPosition = {0.0, 0.0, false, 0};
+bool hasReferencePosition = false;
+
+bool serverReachable = false;
+String lastWiFiError = "";
+unsigned long lastSuccessfulServerContact = 0;
+
+Preferences preferences;
+
+// ============================================================================
+//                        FUNCTION DECLARATIONS
+// ============================================================================
+void initESPNow();
+void onESPNowReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+bool validateEnvelope(JsonDocument& doc);
+String generateMessageId(const String& messageType);
+void processIncomingMessage(JsonDocument& doc, const uint8_t* senderMac, int rssi);
+void addOrUpdatePeer(const String& deviceId, const String& owner, const String& macAddr, int rssi);
+void printKnownPeers();
+String macToString(const uint8_t* mac);
+void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
+
+void performWiFiScan();
+bool tryConnectToKnownNetworks();
+void checkServerReachability();
+void updateCommunicationMode();
+void switchToESPNowMode();
+void switchToWiFiMode();
+int32_t getChannelFromSSID(const String& ssid);
+
+bool validatePeerCredentials(JsonDocument& doc);
+bool isPeerTrusted(const String& deviceId);
+void updatePeerCapabilities(const String& deviceId, JsonObject& payload);
+void cleanupFailedHandshakes();
+
+float calculateDistanceFromRSSI(int rssi);
+void updatePeerPosition(const String& deviceId, int rssi);
+void processTriangulationData(JsonDocument& doc, int rssi);
+String directionToString(Direction dir);
+Direction stringToDirection(const String& dirStr);
+void printPositioningSummary();
+bool hasEnoughPeersForPositioning();
+bool hasEnoughPeersForTriangulation();
+void updateRSSIHistory(const String& deviceId, int rssi);
+
+void storeMessage(JsonDocument& messageDoc, const String& senderId, bool isOwnMessage);
+void processRelayMessage(JsonDocument& doc, const uint8_t* senderMac, int rssi);
+void checkForRelayOpportunities();
+void attemptServerDelivery();
+void cleanupExpiredMessages();
+void printMessageStorage();
+String generateUniqueMessageId();
+bool hasServerConnection();
+void markMessageDelivered(const String& messageId);
+int findStoredMessage(const String& messageId);
+
+void enableWiFiMode();
+void enableESPNowMode();
+void ensureESPNowActive();
+void ensureWiFiActive();
+void deinitESPNow();
+
+// ============================================================================
+//                              SETUP
+// ============================================================================
+void setup() {
+	Serial.begin(115200);
+	delay(1000);
+	
+	Serial.println("\n=================================");
+	Serial.println("Tower/Gateway - Receiver Firmware");
+	Serial.println("=================================");
+	Serial.printf("Device ID: %s\n", DEVICE_ID);
+	Serial.printf("Owner: %s\n", DEVICE_OWNER);
+	Serial.printf("Device Type: %s\n", DEVICE_TYPE);
+	Serial.printf("Firmware Version: %s\n", FIRMWARE_VERSION);
+	Serial.printf("Protocol Version: %s\n", PROTOCOL_VERSION);
+	Serial.println("=================================\n");
+
+	preferences.begin("tower_data", false);
+	
+	storedMessageCount = 0;
+	messageIdCounter = 0;
+	
+	espNowActive = false;
+	wifiModeActive = false;
+	lastRadioSwitch = 0;
+	
+	Serial.print("MAC Address: ");
+	Serial.println(WiFi.macAddress());
+	
+	Serial.println("🚀 Starting in ESP-NOW receiver mode...");
+	enableESPNowMode();
+	
+	Serial.println("Tower Features Active:");
+	Serial.println("  ✓ ESP-NOW Message Reception");
+	Serial.println("  ✓ JSON Envelope Validation");
+	Serial.println("  ✓ Shared Key Authentication");
+	Serial.println("  ✓ Peer Tracking & Management");
+	Serial.println("  ✓ RSSI-based Distance Estimation");
+	Serial.println("  ✓ Message Storage & Relay");
+	Serial.println("  🎯 GATEWAY MODE: Listening for peers\n");
+	
+	Serial.println("Performing initial WiFi scan...");
+	enableWiFiMode();
+	performWiFiScan();
+	updateCommunicationMode();
+	enableESPNowMode();
+	
+	Serial.printf("Starting in mode: %s\n\n", 
+		currentMode == MODE_ESP_NOW_ONLY ? "ESP-NOW Only" :
+		currentMode == MODE_WIFI_BACKUP ? "WiFi Backup" :
+		currentMode == MODE_WIFI_PRIMARY ? "WiFi Primary" : "WiFi Only");
+}
+
+// ============================================================================
+//                              MAIN LOOP
+// ============================================================================
+void loop() {
+	unsigned long currentTime = millis();
+	
+	// Periodic WiFi scan
+	if (currentTime - lastWiFiScan > WIFI_SCAN_INTERVAL) {
+		lastWiFiScan = currentTime;
+		enableWiFiMode();
+		performWiFiScan();
+		updateCommunicationMode();
+		enableESPNowMode();
+	}
+	
+	// Server reachability check
+	if (currentMode != MODE_ESP_NOW_ONLY && currentTime - lastServerCheck > SERVER_CHECK_INTERVAL) {
+		lastServerCheck = currentTime;
+		enableWiFiMode();
+		checkServerReachability();
+		enableESPNowMode();
+	}
+	
+	// Cleanup failed handshakes
+	cleanupFailedHandshakes();
+	
+	// Cleanup expired messages
+	cleanupExpiredMessages();
+	
+	// Check for relay opportunities
+	if (currentTime - lastRelayCheck > MESSAGE_RELAY_INTERVAL) {
+		lastRelayCheck = currentTime;
+		checkForRelayOpportunities();
+	}
+	
+	// Attempt server delivery
+	if (hasServerConnection() && currentTime - lastServerAttempt > SERVER_DELIVERY_INTERVAL) {
+		lastServerAttempt = currentTime;
+		attemptServerDelivery();
+	}
+	
+	// Clean up stale peers (not seen for 60 seconds)
+	for (int i = 0; i < peerCount; i++) {
+		if (currentTime - knownPeers[i].lastSeen > 60000) {
+			Serial.printf("Removing stale peer: %s\n", knownPeers[i].deviceId.c_str());
+			for (int j = i; j < peerCount - 1; j++) {
+				knownPeers[j] = knownPeers[j + 1];
+			}
+			peerCount--;
+			i--;
+		}
+	}
+	
+	delay(100);
+}
+
+// ============================================================================
+//                        ESP-NOW INITIALIZATION
+// ============================================================================
+void initESPNow() {
+	Serial.println("Initializing ESP-NOW...");
+	
+	WiFi.mode(WIFI_STA);
+	WiFi.disconnect();
+	delay(100);
+	
+	esp_wifi_set_promiscuous(true);
+	esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+	esp_wifi_set_promiscuous(false);
+	delay(100);
+	
+	esp_err_t result = esp_now_init();
+	if (result != ESP_OK) {
+		Serial.printf("❌ Error initializing ESP-NOW: %d (%s)\n", result, esp_err_to_name(result));
+		return;
+	}
+	Serial.println("✓ ESP-NOW initialized successfully");
+	
+	esp_now_register_send_cb(onDataSent);
+	esp_now_register_recv_cb(onESPNowReceive);
+	Serial.println("✓ Send and receive callbacks registered");
+	
+	// Add broadcast peer
+	esp_now_peer_info_t peerInfo = {};
+	memcpy(peerInfo.peer_addr, (uint8_t[]){0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, 6);
+	peerInfo.channel = ESP_NOW_CHANNEL;
+	peerInfo.encrypt = false;
+	
+	esp_err_t addResult = esp_now_add_peer(&peerInfo);
+	if (addResult != ESP_OK) {
+		Serial.printf("❌ Failed to add broadcast peer: %d (%s)\n", addResult, esp_err_to_name(addResult));
+		return;
+	}
+	
+	Serial.println("✓ ESP-NOW initialized successfully");
+	Serial.printf("✓ Listening on channel %d\n", ESP_NOW_CHANNEL);
+}
+
+// ============================================================================
+//                        MESSAGE RECEPTION
+// ============================================================================
+void onESPNowReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+	String receivedMessage = "";
+	for (int i = 0; i < len; i++) {
+		receivedMessage += (char)data[i];
+	}
+	
+	Serial.println("\n📥 ESP-NOW Message Received");
+	Serial.printf("From: %s\n", macToString(info->src_addr).c_str());
+	Serial.printf("RSSI: %d\n", info->rx_ctrl->rssi);
+	Serial.printf("Raw: %s\n", receivedMessage.c_str());
+	
+	JsonDocument doc;
+	DeserializationError error = deserializeJson(doc, receivedMessage);
+	
+	if (error) {
+		Serial.printf("❌ JSON parsing failed: %s\n\n", error.c_str());
+		return;
+	}
+	
+	if (!validateEnvelope(doc)) {
+		Serial.println("❌ Invalid envelope or authentication failed\n");
+		return;
+	}
+	
+	String senderDeviceId = doc["source_device"]["device_id"];
+	if (senderDeviceId == DEVICE_ID) {
+		Serial.println("🚫 Ignoring message from self\n");
+		return;
+	}
+	
+	Serial.println("✓ Envelope validation passed");
+	
+	processIncomingMessage(doc, info->src_addr, info->rx_ctrl->rssi);
+}
+
+bool validateEnvelope(JsonDocument& doc) {
+	if (!doc.containsKey("version") || 
+		!doc.containsKey("message_id") || 
+		!doc.containsKey("timestamp") || 
+		!doc.containsKey("shared_key") || 
+		!doc.containsKey("source_device") || 
+		!doc.containsKey("message_type") || 
+		!doc.containsKey("payload")) {
+		Serial.println("❌ Missing required envelope fields");
+		return false;
+	}
+	
+	String receivedKey = doc["shared_key"];
+	if (receivedKey != SHARED_KEY) {
+		Serial.printf("❌ Authentication failed. Expected: %s, Received: %s\n", SHARED_KEY, receivedKey.c_str());
+		return false;
+	}
+	
+	String receivedVersion = doc["version"];
+	if (receivedVersion != PROTOCOL_VERSION) {
+		Serial.printf("⚠️ Version mismatch. Expected: %s, Received: %s\n", PROTOCOL_VERSION, receivedVersion.c_str());
+	}
+	
+	if (!validatePeerCredentials(doc)) {
+		return false;
+	}
+	
+	return true;
+}
+
+String generateMessageId(const String& messageType) {
+	messageCounter++;
+	return messageType + "_" + String(millis()) + "_" + String(messageCounter);
+}
+
+void processIncomingMessage(JsonDocument& doc, const uint8_t* senderMac, int rssi) {
+	String messageType = doc["message_type"];
+	String messageId = doc["message_id"];
+	String senderDeviceId = doc["source_device"]["device_id"];
+	String senderOwner = doc["source_device"]["owner"];
+	String senderMacStr = doc["source_device"]["mac_address"];
+	
+	String senderDeviceType = doc["source_device"].containsKey("device_type") ? 
+							doc["source_device"]["device_type"].as<String>() : "unknown";
+	String senderFirmware = doc["source_device"].containsKey("firmware_version") ? 
+						  doc["source_device"]["firmware_version"].as<String>() : "unknown";
+	
+	Serial.printf("Processing %s message from %s (%s) [%s v%s]\n", 
+				  messageType.c_str(), senderDeviceId.c_str(), senderOwner.c_str(),
+				  senderDeviceType.c_str(), senderFirmware.c_str());
+	
+	if (doc["payload"].containsKey("communication_mode")) {
+		int peerMode = doc["payload"]["communication_mode"];
+		bool peerWifiConnected = doc["payload"].containsKey("wifi_connected") ? 
+							doc["payload"]["wifi_connected"].as<bool>() : false;
+		bool peerServerReachable = doc["payload"].containsKey("server_reachable") ? 
+								doc["payload"]["server_reachable"].as<bool>() : false;
+		
+		Serial.printf("  Peer status: Mode=%d, WiFi=%s, Server=%s\n",
+					  peerMode, peerWifiConnected ? "Yes" : "No", peerServerReachable ? "Yes" : "No");
+	}
+	
+	addOrUpdatePeer(senderDeviceId, senderOwner, senderMacStr, rssi);
+	
+	JsonObject payload = doc["payload"].as<JsonObject>();
+	updatePeerCapabilities(senderDeviceId, payload);
+	
+	// Update RSSI and position
+	updatePeerPosition(senderDeviceId, rssi);
+	
+	if (doc["payload"].containsKey("capabilities")) {
+		JsonArray caps = doc["payload"]["capabilities"];
+		for (JsonVariant cap : caps) {
+			if (cap.as<String>() == "triangulation") {
+				for (int i = 0; i < peerCount; i++) {
+					if (knownPeers[i].deviceId == senderDeviceId) {
+						knownPeers[i].supportsTriangulation = true;
+						break;
+					}
+				}
+				break;
+			}
+		}
+	}
+	
+	if (messageType == "ping") {
+		Serial.printf("🏓 Received ping from %s - shared key validated\n", senderDeviceId.c_str());
+		
+		for (int i = 0; i < peerCount; i++) {
+			if (knownPeers[i].deviceId == senderDeviceId) {
+				knownPeers[i].handshakeComplete = true;
+				knownPeers[i].validated = true;
+				Serial.printf("✅ %s instantly trusted via shared key\n", senderDeviceId.c_str());
+				break;
+			}
+		}
+		
+		// Send ping response back to peer
+		sendPingResponse(senderMac, messageId);
+		
+	} else if (messageType == "data") {
+		Serial.printf("📊 Received data message from trusted peer %s\n", senderDeviceId.c_str());
+		
+		storeMessage(doc, senderDeviceId, false);
+		
+		for (int i = 0; i < peerCount; i++) {
+			if (knownPeers[i].deviceId == senderDeviceId) {
+				knownPeers[i].handshakeComplete = true;
+				knownPeers[i].validated = true;
+				knownPeers[i].deviceType = senderDeviceType;
+				knownPeers[i].firmwareVersion = senderFirmware;
+				Serial.printf("✓ Peer %s validated via shared key\n", senderDeviceId.c_str());
+				break;
+			}
+		}
+		
+		// Display sensor data
+		if (doc["payload"].containsKey("sensor_data")) {
+			JsonObject sensorData = doc["payload"]["sensor_data"];
+			if (sensorData.containsKey("temperature")) {
+				Serial.printf("  Temperature: %.1f°C\n", sensorData["temperature"].as<float>());
+			}
+			if (sensorData.containsKey("humidity")) {
+				Serial.printf("  Humidity: %.1f%%\n", sensorData["humidity"].as<float>());
+			}
+		}
+		
+		if (doc["payload"].containsKey("system_data")) {
+			JsonObject systemData = doc["payload"]["system_data"];
+			if (systemData.containsKey("uptime")) {
+				Serial.printf("  Uptime: %d seconds\n", systemData["uptime"].as<int>());
+			}
+			if (systemData.containsKey("peer_count")) {
+				Serial.printf("  Peer count: %d\n", systemData["peer_count"].as<int>());
+			}
+		}
+		
+	} else if (messageType == "distance_measurement") {
+		Serial.printf("📏 Received distance measurement from %s\n", senderDeviceId.c_str());
+		
+		if (doc["payload"].containsKey("estimated_distance")) {
+			float distance = doc["payload"]["estimated_distance"];
+			String confidence = doc["payload"]["measurement_confidence"];
+			Serial.printf("  Distance: %.1fm (confidence: %s)\n", distance, confidence.c_str());
+		}
+		
+	} else if (messageType == "triangulation") {
+		Serial.printf("📍 Received triangulation data from %s\n", senderDeviceId.c_str());
+		processTriangulationData(doc, rssi);
+		
+	} else if (messageType == "relay") {
+		Serial.printf("🔄 Received relay message from %s\n", senderDeviceId.c_str());
+		processRelayMessage(doc, senderMac, rssi);
+		
+	} else if (messageType == "gateway_data") {
+		// Validate gateway passcode
+		if (!doc.containsKey("gateway_passcode")) {
+			Serial.println("❌ Gateway data missing passcode");
+			return;
+		}
+		
+		String receivedPasscode = doc["gateway_passcode"];
+		if (receivedPasscode != GATEWAY_PASSCODE) {
+			Serial.printf("❌ Invalid gateway passcode: %s\n", receivedPasscode.c_str());
+			return;
+		}
+		
+		Serial.printf("🚀 Received GATEWAY DATA from %s - passcode validated\n", senderDeviceId.c_str());
+		
+		// Store message for server delivery
+		storeMessage(doc, senderDeviceId, false);
+		
+		// Mark peer as validated
+		for (int i = 0; i < peerCount; i++) {
+			if (knownPeers[i].deviceId == senderDeviceId) {
+				knownPeers[i].handshakeComplete = true;
+				knownPeers[i].validated = true;
+				knownPeers[i].deviceType = senderDeviceType;
+				knownPeers[i].firmwareVersion = senderFirmware;
+				Serial.printf("✅ %s validated via gateway passcode\n", senderDeviceId.c_str());
+				break;
+			}
+		}
+		
+		// Display sensor data
+		if (doc["payload"].containsKey("sensor_data")) {
+			JsonObject sensorData = doc["payload"]["sensor_data"];
+			if (sensorData.containsKey("temperature")) {
+				Serial.printf("  Temperature: %.1f°C\n", sensorData["temperature"].as<float>());
+			}
+			if (sensorData.containsKey("humidity")) {
+				Serial.printf("  Humidity: %.1f%%\n", sensorData["humidity"].as<float>());
+			}
+		}
+		
+		if (doc["payload"].containsKey("system_data")) {
+			JsonObject systemData = doc["payload"]["system_data"];
+			if (systemData.containsKey("uptime")) {
+				Serial.printf("  Uptime: %d seconds\n", systemData["uptime"].as<int>());
+			}
+		}
+		
+		// Send acknowledgment back to peer
+		sendGatewayAck(senderMac, doc["message_id"]);
+		
+	} else {
+		Serial.printf("📋 Received %s message from %s\n", messageType.c_str(), senderDeviceId.c_str());
+	}
+	
+	printKnownPeers();
+	printMessageStorage();
+	Serial.println();
+}
+
+// ============================================================================
+//                        GATEWAY ACKNOWLEDGMENT
+// ============================================================================
+void sendGatewayAck(const uint8_t* peerMac, const String& replyToMessageId) {
+	JsonDocument doc;
+	
+	doc["version"] = PROTOCOL_VERSION;
+	doc["message_id"] = generateMessageId("gateway_ack");
+	doc["timestamp"] = millis() / 1000;
+	doc["shared_key"] = SHARED_KEY;
+	doc["gateway_passcode"] = GATEWAY_PASSCODE;
+	
+	JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
+	sourceDevice["device_id"] = DEVICE_ID;
+	sourceDevice["owner"] = DEVICE_OWNER;
+	sourceDevice["mac_address"] = WiFi.macAddress();
+	sourceDevice["device_type"] = DEVICE_TYPE;
+	sourceDevice["firmware_version"] = FIRMWARE_VERSION;
+	
+	doc["message_type"] = "gateway_ack";
+	
+	JsonObject payload = doc["payload"].to<JsonObject>();
+	payload["reply_to"] = replyToMessageId;
+	payload["status"] = "received";
+	payload["stored"] = true;
+	payload["server_reachable"] = serverReachable;
+	payload["stored_messages"] = storedMessageCount;
+	
+	String message;
+	serializeJson(doc, message);
+	
+	Serial.println("📤 Sending gateway acknowledgment");
+	
+	esp_err_t result = esp_now_send(peerMac, (uint8_t*)message.c_str(), message.length());
+	
+	if (result == ESP_OK) {
+		Serial.println("✓ Gateway ack sent");
+	} else {
+		Serial.printf("❌ Error sending gateway ack: %d\n", result);
+	}
+}
+
+// ============================================================================
+//                        PING RESPONSE
+// ============================================================================
+void sendPingResponse(const uint8_t* peerMac, const String& replyToMessageId) {
+	JsonDocument doc;
+	
+	doc["version"] = PROTOCOL_VERSION;
+	doc["message_id"] = generateMessageId("ping_response");
+	doc["timestamp"] = millis() / 1000;
+	doc["shared_key"] = SHARED_KEY;
+	
+	JsonObject sourceDevice = doc["source_device"].to<JsonObject>();
+	sourceDevice["device_id"] = DEVICE_ID;
+	sourceDevice["owner"] = DEVICE_OWNER;
+	sourceDevice["mac_address"] = WiFi.macAddress();
+	sourceDevice["device_type"] = DEVICE_TYPE;
+	sourceDevice["firmware_version"] = FIRMWARE_VERSION;
+	
+	doc["message_type"] = "ping_response";
+	
+	JsonObject payload = doc["payload"].to<JsonObject>();
+	payload["reply_to"] = replyToMessageId;
+	payload["rssi"] = WiFi.RSSI();
+	payload["free_heap"] = ESP.getFreeHeap();
+	payload["uptime"] = millis() / 1000;
+	payload["peer_count"] = peerCount;
+	payload["is_gateway"] = true;
+	payload["server_reachable"] = serverReachable;
+	payload["stored_messages"] = storedMessageCount;
+	
+	String message;
+	serializeJson(doc, message);
+	
+	Serial.println("📤 Sending ping response");
+	
+	esp_err_t result = esp_now_send(peerMac, (uint8_t*)message.c_str(), message.length());
+	
+	if (result == ESP_OK) {
+		Serial.println("✓ Ping response sent");
+	} else {
+		Serial.printf("❌ Error sending ping response: %d\n", result);
+	}
+}
+
+// ============================================================================
+//                        PEER MANAGEMENT
+// ============================================================================
+void addOrUpdatePeer(const String& deviceId, const String& owner, const String& macAddr, int rssi) {
+	for (int i = 0; i < peerCount; i++) {
+		if (knownPeers[i].deviceId == deviceId) {
+			knownPeers[i].rssi = rssi;
+			knownPeers[i].lastSeen = millis();
+			return;
+		}
+	}
+	
+	if (peerCount < MAX_PEERS) {
+		knownPeers[peerCount].deviceId = deviceId;
+		knownPeers[peerCount].owner = owner;
+		knownPeers[peerCount].macAddress = macAddr;
+		knownPeers[peerCount].rssi = rssi;
+		knownPeers[peerCount].lastSeen = millis();
+		knownPeers[peerCount].firstSeen = millis();
+		knownPeers[peerCount].handshakeComplete = false;
+		knownPeers[peerCount].validated = false;
+		peerCount++;
+		
+		Serial.printf("➕ Added new peer: %s (%s) - RSSI: %d\n", deviceId.c_str(), owner.c_str(), rssi);
+	} else {
+		Serial.println("⚠️ Maximum peer count reached - cannot add new peer");
+	}
+}
+
+void printKnownPeers() {
+	Serial.println("👥 Known Peers:");
+	Serial.printf("Current Mode: %s | WiFi: %s | Server: %s\n",
+		currentMode == MODE_ESP_NOW_ONLY ? "ESP-NOW Only" :
+		currentMode == MODE_WIFI_BACKUP ? "WiFi Backup" :
+		currentMode == MODE_WIFI_PRIMARY ? "WiFi Primary" : "WiFi Only",
+		wifiConnected ? connectedSSID.c_str() : "Disconnected",
+		serverReachable ? "Reachable" : "Unreachable");
+	
+	if (peerCount == 0) {
+		Serial.println("  No peers discovered yet");
+	} else {
+		for (int i = 0; i < peerCount; i++) {
+			Serial.printf("  %d. %s (%s) [%s v%s]\n", 
+						  i + 1, 
+						  knownPeers[i].deviceId.c_str(),
+						  knownPeers[i].owner.c_str(),
+						  knownPeers[i].deviceType.c_str(),
+						  knownPeers[i].firmwareVersion.c_str());
+			
+			Serial.printf("     RSSI: %d dBm | Validated: %s | Last seen: %lus ago\n",
+						  knownPeers[i].rssi,
+						  knownPeers[i].validated ? "✓" : "✗",
+						  (millis() - knownPeers[i].lastSeen) / 1000);
+			
+			if (knownPeers[i].relativePos.isValid) {
+				Serial.printf("     Distance: %.1fm %s (confidence: %.0f%%)\n",
+							  knownPeers[i].relativePos.distance,
+							  directionToString(knownPeers[i].relativePos.direction).c_str(),
+							  knownPeers[i].relativePos.confidence * 100);
+			}
+		}
+	}
+}
+
+String macToString(const uint8_t* mac) {
+	char macStr[18];
+	snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+			mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	return String(macStr);
+}
+
+void onDataSent(const esp_now_send_info_t *send_info, esp_now_send_status_t status) {
+	char macStr[18];
+	snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+			send_info->des_addr[0], send_info->des_addr[1], send_info->des_addr[2],
+			send_info->des_addr[3], send_info->des_addr[4], send_info->des_addr[5]);
+	Serial.printf("ESP-NOW Send to %s: %s\n", macStr, 
+				  status == ESP_NOW_SEND_SUCCESS ? "✓ SUCCESS" : "❌ FAILED");
+}
+
+// ============================================================================
+//                        WIFI FUNCTIONS
+// ============================================================================
+void performWiFiScan() {
+	Serial.println("🔍 Scanning for WiFi networks...");
+	
+	int n = WiFi.scanNetworks();
+	bool foundKnown = false;
+	
+	if (n == 0) {
+		Serial.println("❌ No WiFi networks found");
+		return;
+	}
+	
+	Serial.printf("Found %d networks:\n", n);
+	
+	for (int i = 0; i < n; i++) {
+		String ssid = WiFi.SSID(i);
+		int32_t rssi = WiFi.RSSI(i);
+		bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+		
+		Serial.printf("  %s (RSSI: %d) %s\n", ssid.c_str(), rssi, isOpen ? "[OPEN]" : "[SECURED]");
+		
+		for (int j = 0; knownNetworks[j].ssid != ""; j++) {
+			if (knownNetworks[j].ssid == ssid) {
+				Serial.printf("    ✓ Known network: %s\n", ssid.c_str());
+				foundKnown = true;
+				break;
+			}
+		}
+	}
+	
+	if (foundKnown && !wifiConnected) {
+		Serial.println("🔗 Attempting to connect to known networks...");
+		tryConnectToKnownNetworks();
+	}
+	
+	Serial.println();
+}
+
+bool tryConnectToKnownNetworks() {
+	int n = WiFi.scanNetworks();
+	
+	for (int i = 0; i < n; i++) {
+		String ssid = WiFi.SSID(i);
+		int32_t channel = WiFi.channel(i);
+		bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+		
+		for (int j = 0; knownNetworks[j].ssid != ""; j++) {
+			if (knownNetworks[j].ssid == ssid) {
+				Serial.printf("🔗 Attempting connection to: %s\n", ssid.c_str());
+				
+				if (knownNetworks[j].isOpen || isOpen) {
+					WiFi.begin(ssid.c_str());
+				} else {
+					WiFi.begin(ssid.c_str(), knownNetworks[j].password.c_str());
+				}
+				
+				int attempts = 0;
+				while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+					delay(500);
+					Serial.print(".");
+					attempts++;
+				}
+				
+				if (WiFi.status() == WL_CONNECTED) {
+					wifiConnected = true;
+					connectedSSID = ssid;
+					wifiChannel = channel;
+					
+					Serial.println();
+					Serial.printf("✅ Connected to: %s\n", ssid.c_str());
+					Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+					
+					lastSuccessfulServerContact = millis();
+					return true;
+				} else {
+					Serial.println();
+					Serial.printf("❌ Failed to connect to: %s\n", ssid.c_str());
+					WiFi.disconnect();
+				}
+			}
+		}
+	}
+	
+	return false;
+}
+
+void checkServerReachability() {
+	if (!wifiConnected) {
+		serverReachable = false;
+		return;
+	}
+	
+	Serial.println("🌐 Checking server reachability...");
+	
+	WiFiClient client;
+	if (client.connect(TEST_SERVER_HOST, TEST_SERVER_PORT)) {
+		serverReachable = true;
+		lastSuccessfulServerContact = millis();
+		Serial.printf("✅ Server reachable: %s:%d\n", TEST_SERVER_HOST, TEST_SERVER_PORT);
+		client.stop();
+	} else {
+		serverReachable = false;
+		Serial.printf("❌ Server unreachable: %s:%d\n", TEST_SERVER_HOST, TEST_SERVER_PORT);
+	}
+}
+
+void updateCommunicationMode() {
+	CommMode previousMode = currentMode;
+	
+	if (!wifiConnected) {
+		currentMode = MODE_ESP_NOW_ONLY;
+	} else {
+		currentMode = MODE_WIFI_BACKUP;
+	}
+	
+	if (currentMode != previousMode && millis() - lastModeSwitch > MODE_SWITCH_COOLDOWN) {
+		lastModeSwitch = millis();
+		Serial.printf("🔄 Mode change: %s -> %s\n",
+			previousMode == MODE_ESP_NOW_ONLY ? "ESP-NOW Only" : "WiFi Backup",
+			currentMode == MODE_ESP_NOW_ONLY ? "ESP-NOW Only" : "WiFi Backup");
+		switchToESPNowMode();
+	}
+}
+
+void switchToESPNowMode() {
+	if (wifiConnected && wifiChannel > 0) {
+		esp_wifi_set_promiscuous(true);
+		esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE);
+		esp_wifi_set_promiscuous(false);
+	} else {
+		esp_wifi_set_promiscuous(true);
+		esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+		esp_wifi_set_promiscuous(false);
+	}
+}
+
+void switchToWiFiMode() {
+	if (wifiChannel > 0) {
+		esp_wifi_set_promiscuous(true);
+		esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE);
+		esp_wifi_set_promiscuous(false);
+	}
+}
+
+int32_t getChannelFromSSID(const String& ssid) {
+	int n = WiFi.scanNetworks();
+	for (int i = 0; i < n; i++) {
+		if (WiFi.SSID(i) == ssid) {
+			return WiFi.channel(i);
+		}
+	}
+	return 0;
+}
+
+// ============================================================================
+//                        PEER VALIDATION
+// ============================================================================
+bool validatePeerCredentials(JsonDocument& doc) {
+	if (!doc["source_device"].containsKey("device_type")) {
+		Serial.println("⚠️ Missing device type - allowing for compatibility");
+		return true;  // Be lenient for tower
+	}
+	
+	String deviceType = doc["source_device"]["device_type"];
+	// Accept both peer and tower device types
+	if (deviceType != "ESP2_UNIVERSAL" && deviceType != "TOWER") {
+		Serial.printf("⚠️ Unknown device type: %s\n", deviceType.c_str());
+	}
+	
+	return true;
+}
+
+bool isPeerTrusted(const String& deviceId) {
+	for (int i = 0; i < peerCount; i++) {
+		if (knownPeers[i].deviceId == deviceId) {
+			return knownPeers[i].validated && 
+				  knownPeers[i].handshakeComplete && 
+				  (millis() - knownPeers[i].lastSeen < 300000);
+		}
+	}
+	return false;
+}
+
+void updatePeerCapabilities(const String& deviceId, JsonObject& payload) {
+	for (int i = 0; i < peerCount; i++) {
+		if (knownPeers[i].deviceId == deviceId) {
+			knownPeers[i].capabilities.clear();
+			
+			if (payload.containsKey("capabilities")) {
+				JsonArray caps = payload["capabilities"];
+				for (JsonVariant cap : caps) {
+					knownPeers[i].capabilities.push_back(cap.as<String>());
+				}
+			}
+			
+			if (payload.containsKey("communication_mode")) {
+				knownPeers[i].preferredMode = (CommMode)payload["communication_mode"].as<int>();
+			}
+			
+			break;
+		}
+	}
+}
+
+void cleanupFailedHandshakes() {
+	unsigned long currentTime = millis();
+	
+	for (auto it = handshakeAttempts.begin(); it != handshakeAttempts.end();) {
+		if (currentTime - it->second > HANDSHAKE_TIMEOUT * 2) {
+			it = handshakeAttempts.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
+// ============================================================================
+//                        POSITIONING FUNCTIONS
+// ============================================================================
+float calculateDistanceFromRSSI(int rssi) {
+	if (rssi > RSSI_CALIBRATION_VALUE) {
+		return 0.5;
+	}
+	
+	float distance = RSSI_CALIBRATION_DISTANCE * 
+					pow(10.0, (RSSI_CALIBRATION_VALUE - rssi) / (10.0 * PATH_LOSS_EXPONENT));
+	
+	if (distance > MAX_POSITIONING_DISTANCE) {
+		distance = MAX_POSITIONING_DISTANCE;
+	}
+	
+	return distance;
+}
+
+void updateRSSIHistory(const String& deviceId, int rssi) {
+	for (int i = 0; i < peerCount; i++) {
+		if (knownPeers[i].deviceId == deviceId) {
+			knownPeers[i].rssiHistory.push_back(rssi);
+			
+			if (knownPeers[i].rssiHistory.size() > 10) {
+				knownPeers[i].rssiHistory.erase(knownPeers[i].rssiHistory.begin());
+			}
+			break;
+		}
+	}
+}
+
+void updatePeerPosition(const String& deviceId, int rssi) {
+	for (int i = 0; i < peerCount; i++) {
+		if (knownPeers[i].deviceId == deviceId) {
+			updateRSSIHistory(deviceId, rssi);
+			
+			float avgRSSI = rssi;
+			if (!knownPeers[i].rssiHistory.empty()) {
+				int sum = 0;
+				for (int val : knownPeers[i].rssiHistory) {
+					sum += val;
+				}
+				avgRSSI = sum / (float)knownPeers[i].rssiHistory.size();
+			}
+			
+			float distance = calculateDistanceFromRSSI((int)avgRSSI);
+			
+			knownPeers[i].relativePos.distance = distance;
+			knownPeers[i].relativePos.lastUpdated = millis();
+			knownPeers[i].relativePos.isValid = true;
+			
+			float confidence = 0.5;
+			if (knownPeers[i].rssiHistory.size() >= 3) {
+				float variance = 0;
+				for (int val : knownPeers[i].rssiHistory) {
+					variance += pow(val - avgRSSI, 2);
+				}
+				variance /= knownPeers[i].rssiHistory.size();
+				
+				confidence = 1.0 - (variance / 100.0);
+				confidence = max(0.1f, min(1.0f, confidence));
+			}
+			
+			knownPeers[i].relativePos.confidence = confidence;
+			
+			Serial.printf("📍 Updated position for %s: %.1fm (RSSI: %.1f, Confidence: %.2f)\n",
+						  deviceId.c_str(), distance, avgRSSI, confidence);
+			break;
+		}
+	}
+}
+
+void processTriangulationData(JsonDocument& doc, int rssi) {
+	String senderDevice = doc["source_device"]["device_id"];
+	updatePeerPosition(senderDevice, rssi);
+}
+
+String directionToString(Direction dir) {
+	switch (dir) {
+		case DIR_NORTH: return "North";
+		case DIR_NORTHEAST: return "Northeast";
+		case DIR_EAST: return "East";
+		case DIR_SOUTHEAST: return "Southeast";
+		case DIR_SOUTH: return "South";
+		case DIR_SOUTHWEST: return "Southwest";
+		case DIR_WEST: return "West";
+		case DIR_NORTHWEST: return "Northwest";
+		default: return "Unknown";
+	}
+}
+
+Direction stringToDirection(const String& dirStr) {
+	if (dirStr == "North") return DIR_NORTH;
+	else if (dirStr == "Northeast") return DIR_NORTHEAST;
+	else if (dirStr == "East") return DIR_EAST;
+	else if (dirStr == "Southeast") return DIR_SOUTHEAST;
+	else if (dirStr == "South") return DIR_SOUTH;
+	else if (dirStr == "Southwest") return DIR_SOUTHWEST;
+	else if (dirStr == "West") return DIR_WEST;
+	else if (dirStr == "Northwest") return DIR_NORTHWEST;
+	return DIR_UNKNOWN;
+}
+
+bool hasEnoughPeersForPositioning() {
+	return peerCount >= MIN_PEERS_FOR_POSITIONING;
+}
+
+bool hasEnoughPeersForTriangulation() {
+	return peerCount >= MIN_PEERS_FOR_TRIANGULATION;
+}
+
+void printPositioningSummary() {
+	Serial.println("🗺️ Positioning Summary:");
+	Serial.printf("Device: %s (Tower)\n", DEVICE_ID);
+	
+	bool hasValidPositions = false;
+	for (int i = 0; i < peerCount; i++) {
+		if (knownPeers[i].relativePos.isValid) {
+			hasValidPositions = true;
+			Serial.printf("  %s: %.1fm %s (confidence: %.0f%%)\n",
+						  knownPeers[i].deviceId.c_str(),
+						  knownPeers[i].relativePos.distance,
+						  directionToString(knownPeers[i].relativePos.direction).c_str(),
+						  knownPeers[i].relativePos.confidence * 100);
+		}
+	}
+	
+	if (!hasValidPositions) {
+		Serial.println("  No peer positions available yet");
+	}
+}
+
+// ============================================================================
+//                        MESSAGE STORAGE & RELAY
+// ============================================================================
+void storeMessage(JsonDocument& messageDoc, const String& senderId, bool isOwnMessage) {
+	String messageId = messageDoc["message_id"];
+	
+	for (int i = 0; i < storedMessageCount; i++) {
+		if (messageStorage[i].messageId == messageId) {
+			Serial.printf("📦 Message already stored: %s\n", messageId.c_str());
+			return;
+		}
+	}
+	
+	if (storedMessageCount >= MAX_STORED_MESSAGES) {
+		Serial.println("⚠️ Message storage full - removing oldest message");
+		for (int i = 0; i < storedMessageCount - 1; i++) {
+			messageStorage[i] = messageStorage[i + 1];
+		}
+		storedMessageCount--;
+	}
+	
+	int storeIndex = storedMessageCount;
+	messageStorage[storeIndex].messageId = messageId;
+	messageStorage[storeIndex].originalSender = senderId;
+	messageStorage[storeIndex].senderOwner = messageDoc["source_device"]["owner"].as<String>();
+	messageStorage[storeIndex].messageData = messageDoc;
+	messageStorage[storeIndex].timestamp = millis();
+	messageStorage[storeIndex].lastRelayAttempt = 0;
+	messageStorage[storeIndex].deliveredToServer = false;
+	messageStorage[storeIndex].isOwnMessage = isOwnMessage;
+	messageStorage[storeIndex].hopCount = 0;
+	messageStorage[storeIndex].relayChain.clear();
+	messageStorage[storeIndex].attemptedPeers.clear();
+	
+	if (messageDoc["payload"].containsKey("relay_chain")) {
+		JsonArray relayChain = messageDoc["payload"]["relay_chain"];
+		for (JsonVariant hop : relayChain) {
+			RelayHop relayHop;
+			relayHop.deviceId = hop["device_id"].as<String>();
+			relayHop.deviceOwner = hop["device_owner"].as<String>();
+			relayHop.timestamp = hop["timestamp"].as<unsigned long>();
+			relayHop.rssi = hop["rssi"].as<int>();
+			messageStorage[storeIndex].relayChain.push_back(relayHop);
+		}
+		messageStorage[storeIndex].hopCount = messageStorage[storeIndex].relayChain.size();
+	}
+	
+	storedMessageCount++;
+	
+	Serial.printf("📦 Stored message: %s from %s - Storage: %d/%d\n", 
+				  messageId.c_str(), senderId.c_str(),
+				  storedMessageCount, MAX_STORED_MESSAGES);
+}
+
+void processRelayMessage(JsonDocument& doc, const uint8_t* senderMac, int rssi) {
+	String senderDeviceId = doc["source_device"]["device_id"];
+	String relayMessageId = doc["payload"]["relay_message_id"];
+	String relayRequest = doc["payload"]["request_type"];
+	
+	Serial.printf("🔄 Relay request from %s: %s for message %s\n", 
+				  senderDeviceId.c_str(), relayRequest.c_str(), relayMessageId.c_str());
+	
+	if (relayRequest == "delivery_request") {
+		if (doc["payload"].containsKey("message_data")) {
+			JsonDocument relayedMessage = doc["payload"]["message_data"];
+			storeMessage(relayedMessage, senderDeviceId, false);
+		}
+		
+	} else if (relayRequest == "delivery_confirmation") {
+		markMessageDelivered(relayMessageId);
+		Serial.printf("✅ Message %s confirmed delivered by %s\n", 
+					  relayMessageId.c_str(), senderDeviceId.c_str());
+	}
+}
+
+void checkForRelayOpportunities() {
+	if (storedMessageCount == 0) return;
+	
+	Serial.println("🔍 Checking for relay opportunities...");
+	
+	// Tower can attempt server delivery directly
+	if (hasServerConnection()) {
+		attemptServerDelivery();
+	}
+}
+
+void attemptServerDelivery() {
+	if (!hasServerConnection() || storedMessageCount == 0) return;
+	
+	Serial.println("📤 Attempting server delivery of stored messages...");
+	
+	for (int i = 0; i < storedMessageCount; i++) {
+		StoredMessage& msg = messageStorage[i];
+		
+		if (msg.deliveredToServer) continue;
+		
+		// TODO: Implement actual server delivery via HTTP/WebSocket
+		Serial.printf("📤 Delivering message %s to server (simulated)\n", 
+					  msg.messageId.c_str());
+		
+		msg.deliveredToServer = true;
+	}
+	
+	// Clean up delivered messages
+	for (int i = storedMessageCount - 1; i >= 0; i--) {
+		if (messageStorage[i].deliveredToServer) {
+			for (int j = i; j < storedMessageCount - 1; j++) {
+				messageStorage[j] = messageStorage[j + 1];
+			}
+			storedMessageCount--;
+			Serial.println("🗑️ Removed delivered message from storage");
+		}
+	}
+}
+
+void cleanupExpiredMessages() {
+	unsigned long currentTime = millis();
+	
+	for (int i = storedMessageCount - 1; i >= 0; i--) {
+		if (currentTime - messageStorage[i].timestamp > MESSAGE_EXPIRY_TIME) {
+			Serial.printf("🗑️ Removing expired message: %s\n", messageStorage[i].messageId.c_str());
+			
+			for (int j = i; j < storedMessageCount - 1; j++) {
+				messageStorage[j] = messageStorage[j + 1];
+			}
+			storedMessageCount--;
+		}
+	}
+}
+
+void printMessageStorage() {
+	Serial.printf("📦 Message Storage: %d/%d messages\n", storedMessageCount, MAX_STORED_MESSAGES);
+	
+	if (storedMessageCount == 0) {
+		Serial.println("  No stored messages");
+		return;
+	}
+	
+	for (int i = 0; i < storedMessageCount; i++) {
+		StoredMessage& msg = messageStorage[i];
+		Serial.printf("  %d. %s from %s\n", 
+					  i + 1, msg.messageId.c_str(), msg.originalSender.c_str());
+		Serial.printf("     Hops: %d | Delivered: %s | Age: %lus\n",
+					  msg.hopCount,
+					  msg.deliveredToServer ? "Yes" : "No",
+					  (millis() - msg.timestamp) / 1000);
+	}
+}
+
+String generateUniqueMessageId() {
+	messageIdCounter++;
+	return String("msg_") + DEVICE_ID + "_" + String(millis()) + "_" + String(messageIdCounter);
+}
+
+bool hasServerConnection() {
+	return (currentMode == MODE_WIFI_PRIMARY || currentMode == MODE_WIFI_BACKUP) && 
+		  wifiConnected && serverReachable;
+}
+
+void markMessageDelivered(const String& messageId) {
+	for (int i = 0; i < storedMessageCount; i++) {
+		if (messageStorage[i].messageId == messageId) {
+			messageStorage[i].deliveredToServer = true;
+			Serial.printf("✅ Marked message as delivered: %s\n", messageId.c_str());
+			break;
+		}
+	}
+}
+
+int findStoredMessage(const String& messageId) {
+	for (int i = 0; i < storedMessageCount; i++) {
+		if (messageStorage[i].messageId == messageId) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+// ============================================================================
+//                         RADIO MANAGEMENT
+// ============================================================================
+void enableWiFiMode() {
+	if (wifiModeActive) return;
+	
+	unsigned long currentTime = millis();
+	if (currentTime - lastRadioSwitch < RADIO_SWITCH_DELAY) {
+		delay(RADIO_SWITCH_DELAY - (currentTime - lastRadioSwitch));
+	}
+	
+	if (espNowActive) {
+		Serial.println("📡 Switching radio: ESP-NOW -> WiFi");
+		esp_now_deinit();
+		espNowActive = false;
+		delay(100);
+	}
+	
+	WiFi.mode(WIFI_STA);
+	wifiModeActive = true;
+	lastRadioSwitch = millis();
+	
+	Serial.println("📶 WiFi mode activated");
+}
+
+void enableESPNowMode() {
+	if (espNowActive) return;
+	
+	unsigned long currentTime = millis();
+	if (currentTime - lastRadioSwitch < RADIO_SWITCH_DELAY) {
+		delay(RADIO_SWITCH_DELAY - (currentTime - lastRadioSwitch));
+	}
+	
+	if (wifiModeActive) {
+		Serial.println("📡 Switching radio: WiFi -> ESP-NOW");
+		WiFi.disconnect();
+		delay(100);
+		wifiModeActive = false;
+	}
+	
+	if (espNowActive) {
+		esp_now_deinit();
+	}
+	
+	initESPNow();
+	espNowActive = true;
+	lastRadioSwitch = millis();
+	
+	Serial.println("📡 ESP-NOW mode activated");
+}
+
+void ensureESPNowActive() {
+	if (!espNowActive) {
+		enableESPNowMode();
+	}
+}
+
+void ensureWiFiActive() {
+	if (!wifiModeActive) {
+		enableWiFiMode();
+	}
+}
+
+void deinitESPNow() {
+	if (espNowActive) {
+		esp_now_deinit();
+		espNowActive = false;
+		Serial.println("📡 ESP-NOW deinitialized");
+	}
+}
